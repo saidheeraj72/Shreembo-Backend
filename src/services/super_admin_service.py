@@ -1,125 +1,161 @@
-from fastapi import HTTPException
-from src.database.session import get_service_role_client
-from datetime import datetime, timezone
+"""
+Super Admin service for platform-level administration.
+"""
+from typing import List, Optional
+from uuid import UUID
+
+from src.core.database import db
+from src.core.exceptions import AuthorizationError, NotFoundError
+
 
 class SuperAdminService:
-    """
-    Handles operations for Global Super Admins who oversee ALL organizations.
-    """
-    def __init__(self):
-        self.supabase = get_service_role_client()
+    """Service for super admin operations."""
 
-    def is_super_admin(self, email: str) -> bool:
+    @staticmethod
+    async def verify_super_admin(email: str) -> bool:
         """
-        Checks if the given email exists in the super_admins table.
-        """
-        try:
-            res = self.supabase.table("super_admins").select("id").eq("email", email).execute()
-            return len(res.data) > 0
-        except Exception:
-            return False
+        Check if an email belongs to a super admin.
 
-    def get_requests(self, status: str = None):
-        """
-        Fetch organization requests. Optionally filter by status.
-        """
-        query = self.supabase.table("organization_requests").select("*")
-        if status:
-            query = query.eq("status", status)
-        
-        res = query.order("created_at", desc=True).execute()
-        return res.data
+        Args:
+            email: Email address to check
 
-    def get_all_organizations(self):
+        Returns:
+            True if the email is a super admin
         """
-        Fetch all organizations with their owner details (if possible via join, or just raw orgs).
+        response = (
+            db.admin.table("super_admins")
+            .select("id, is_active")
+            .eq("email", email.lower())
+            .eq("is_active", True)
+            .maybe_single()
+            .execute()
+        )
+
+        return response is not None and response.data is not None
+
+    @staticmethod
+    async def get_super_admin_by_email(email: str) -> Optional[dict]:
         """
-        # Join with profiles to get owner name? Supabase join syntax: select("*, profiles(full_name)")
-        # Assuming simple select for now.
-        res = self.supabase.table("organizations").select("*").order("created_at", desc=True).execute()
-        return res.data
+        Get super admin details by email.
 
-    def approve_org_request(self, request_id: str):
-        # 1. Get the request
-        req_res = self.supabase.table("organization_requests").select("*").eq("id", request_id).single().execute()
-        if not req_res.data:
-            raise HTTPException(status_code=404, detail="Request not found")
-        
-        request = req_res.data
-        if request["status"] != "pending":
-            raise HTTPException(status_code=400, detail=f"Request is already {request['status']}")
+        Args:
+            email: Email address
 
-        user_id = request["user_id"]
-        org_name = request["org_name"]
-        
-        # 2. Create Organization
-        # Slug generation (simple version - in prod, ensure uniqueness)
-        slug = org_name.lower().replace(" ", "-")
-        
-        org_data = {
-            "name": org_name,
-            "slug": slug,
-            "plan_type": "team", 
-            "owner_id": user_id
+        Returns:
+            Super admin data or None
+        """
+        response = (
+            db.admin.table("super_admins")
+            .select("*")
+            .eq("email", email.lower())
+            .maybe_single()
+            .execute()
+        )
+
+        return response.data if response else None
+
+    @staticmethod
+    async def create_super_admin(email: str, full_name: Optional[str] = None) -> dict:
+        """
+        Create a new super admin.
+
+        Args:
+            email: Email address
+            full_name: Full name (optional)
+
+        Returns:
+            Created super admin data
+        """
+        data = {
+            "email": email.lower(),
+            "full_name": full_name,
+            "is_active": True,
         }
-        
-        try:
-            org_res = self.supabase.table("organizations").insert(org_data).execute()
-            # If insert returns list
-            if isinstance(org_res.data, list) and len(org_res.data) > 0:
-                new_org = org_res.data[0]
-            else:
-                new_org = org_res.data
-                
-            new_org_id = new_org["id"]
 
-            # 3. Create Default Roles
-            roles_data = [
-                {"org_id": new_org_id, "name": "Owner", "description": "Organization Owner", "is_system_role": True},
-                {"org_id": new_org_id, "name": "Admin", "description": "Organization Administrator", "is_system_role": True},
-                {"org_id": new_org_id, "name": "Member", "description": "Standard Member", "is_system_role": True}
-            ]
-            roles_res = self.supabase.table("roles").insert(roles_data).execute()
-            
-            # Get Owner Role ID
-            owner_role_id = next((r["id"] for r in roles_res.data if r["name"] == "Owner"), None)
+        response = db.admin.table("super_admins").insert(data).execute()
 
-            # 4. Add User to Organization Members
-            self.supabase.table("organization_members").insert({
-                "org_id": new_org_id,
-                "user_id": user_id,
-                "role_id": owner_role_id,
-                "status": "active"
-            }).execute()
+        if not response.data:
+            raise Exception("Failed to create super admin")
 
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to create organization/roles: {str(e)}")
+        return response.data[0]
 
-        # 5. Update User Profile -> Link to new Org (Legacy/Current Context)
-        try:
-            self.supabase.table("profiles").update({
-                "org_id": new_org_id,
-                "account_type": "organization",
-                "status": "active" 
-            }).eq("id", user_id).execute()
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to update profile: {str(e)}")
-            
-        # 6. Update Request Status
-        self.supabase.table("organization_requests").update({
-            "status": "approved",
-            "updated_at": datetime.now(timezone.utc).isoformat()
-        }).eq("id", request_id).execute()
+    @staticmethod
+    async def list_super_admins() -> List[dict]:
+        """
+        List all super admins.
 
-        return {"message": "Organization approved and created", "org_id": new_org_id}
+        Returns:
+            List of super admin data
+        """
+        response = (
+            db.admin.table("super_admins")
+            .select("*")
+            .order("created_at", desc=True)
+            .execute()
+        )
 
-    def reject_org_request(self, request_id: str, reason: str):
-        self.supabase.table("organization_requests").update({
-            "status": "rejected",
-            "rejection_reason": reason,
-            "updated_at": datetime.now(timezone.utc).isoformat()
-        }).eq("id", request_id).execute()
-        
-        return {"message": "Request rejected"}
+        return response.data
 
+    @staticmethod
+    async def deactivate_super_admin(super_admin_id: UUID) -> dict:
+        """
+        Deactivate a super admin.
+
+        Args:
+            super_admin_id: Super admin UUID
+
+        Returns:
+            Updated super admin data
+        """
+        response = (
+            db.admin.table("super_admins")
+            .update({"is_active": False})
+            .eq("id", str(super_admin_id))
+            .execute()
+        )
+
+        if not response.data:
+            raise NotFoundError("Super admin not found")
+
+        return response.data[0]
+
+    @staticmethod
+    async def activate_super_admin(super_admin_id: UUID) -> dict:
+        """
+        Activate a super admin.
+
+        Args:
+            super_admin_id: Super admin UUID
+
+        Returns:
+            Updated super admin data
+        """
+        response = (
+            db.admin.table("super_admins")
+            .update({"is_active": True})
+            .eq("id", str(super_admin_id))
+            .execute()
+        )
+
+        if not response.data:
+            raise NotFoundError("Super admin not found")
+
+        return response.data[0]
+
+    @staticmethod
+    async def update_last_login(email: str) -> None:
+        """
+        Update last login timestamp for super admin.
+
+        Args:
+            email: Super admin email
+        """
+        from datetime import datetime
+
+        db.admin.table("super_admins").update(
+            {"last_login_at": datetime.utcnow().isoformat()}
+        ).eq("email", email.lower()).execute()
+
+
+# Global super admin service instance
 super_admin_service = SuperAdminService()
