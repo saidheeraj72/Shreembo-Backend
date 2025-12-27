@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+python-multipart
+supabase
+httpx
+pytest
+pydantic[email]
