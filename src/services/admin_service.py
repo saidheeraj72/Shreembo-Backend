@@ -16,12 +16,29 @@ class AdminService:
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to list branches: {e}")
 
-    def create_branch(self, org_id: UUID, name: str, location: Optional[str] = None):
+    def create_branch(self, org_id: UUID, name: str, 
+                      branch_code: Optional[str] = None, branch_type: Optional[str] = None,
+                      address: Optional[str] = None, city: Optional[str] = None,
+                      state: Optional[str] = None, country: Optional[str] = None,
+                      pincode: Optional[str] = None, phone: Optional[str] = None,
+                      email: Optional[str] = None, manager_name: Optional[str] = None,
+                      status: str = "active", location: Optional[str] = None):
         try:
             res = self.supabase.table("branches").insert({
                 "org_id": str(org_id),
                 "name": name,
-                "location": location
+                "location": location,
+                "branch_code": branch_code,
+                "branch_type": branch_type,
+                "address": address,
+                "city": city,
+                "state": state,
+                "country": country,
+                "pincode": pincode,
+                "phone": phone,
+                "email": email,
+                "manager_name": manager_name,
+                "status": status
             }).execute()
             return res.data[0]
         except Exception as e:

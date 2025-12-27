@@ -11,6 +11,17 @@ router = APIRouter(dependencies=[Depends(verify_organization_admin)])
 class BranchCreate(BaseModel):
     name: str
     location: Optional[str] = None
+    branch_code: Optional[str] = None
+    branch_type: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    country: Optional[str] = None
+    pincode: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    manager_name: Optional[str] = None
+    status: str = "active"
 
 class MemberInvite(BaseModel):
     email: EmailStr
@@ -50,7 +61,22 @@ def create_branch(branch_data: BranchCreate, org_id: UUID = Depends(verify_organ
     Create a new branch for the current organization.
     Requires organization admin privileges.
     """
-    return admin_service.create_branch(org_id, branch_data.name, branch_data.location)
+    return admin_service.create_branch(
+        org_id, 
+        branch_data.name, 
+        branch_data.location,
+        branch_data.branch_code,
+        branch_data.branch_type,
+        branch_data.address,
+        branch_data.city,
+        branch_data.state,
+        branch_data.country,
+        branch_data.pincode,
+        branch_data.phone,
+        branch_data.email,
+        branch_data.manager_name,
+        branch_data.status
+    )
 
 # --- User/Member Management ---
 @router.get("/members")
