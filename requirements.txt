@@ -7,3 +7,38 @@ supabase
 httpx
 pytest
 pydantic[email]
+
+# Redis
+redis
+
+# Security
+python-jose[cryptography]
+passlib[bcrypt]
+
+# AWS S3
+boto3
+botocore
+
+# Pinecone Vector Database
+pinecone-client
+
+# OpenAI for Embeddings
+openai
+
+# Document Processing
+pypdf2
+python-docx
+openpyxl
+python-pptx
+
+# WebSocket
+websockets
+
+# Background Tasks
+celery
+
+# Async File Handling
+aiofiles
+
+# File Type Detection
+python-magic

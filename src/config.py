@@ -53,10 +53,10 @@ class Settings(BaseSettings):
     CACHE_TTL: int = 300  # 5 minutes
 
     # Email (SMTP)
-    SMTP_HOST: str = "smtp.gmail.com"
+    SMTP_HOST: str = "saidheeraj987@gmail.com"
     SMTP_PORT: int = 587
     SMTP_USER: Optional[str] = None
-    SMTP_PASSWORD: Optional[str] = None
+    SMTP_PASSWORD: Optional[str] = "Sai@17895"
     SMTP_FROM_EMAIL: Optional[str] = None
     SMTP_FROM_NAME: str = "Enterprise DMS"
     SMTP_ENABLED: bool = False
@@ -97,10 +97,44 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_FILE: Optional[str] = None
 
+    # AWS S3
+    AWS_ACCESS_KEY_ID: Optional[str] = None
+    AWS_SECRET_ACCESS_KEY: Optional[str] = None
+    AWS_S3_BUCKET: Optional[str] = None
+    AWS_S3_REGION: str 
+    AWS_S3_ENDPOINT_URL: Optional[str] = None  # For S3-compatible services
+
+    # Pinecone
+    PINECONE_API_KEY: Optional[str] = None
+    PINECONE_INDEX_NAME: str = "document-embeddings"
+
+    # OpenAI
+    OPENAI_API_KEY: Optional[str] = None
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    EMBEDDING_DIMENSIONS: int = 1536
+
+    # Document Processing
+    ENABLE_EMBEDDINGS: bool = True
+    MAX_EMBEDDING_FILE_SIZE_MB: int = 50
+    SUPPORTED_EMBEDDING_TYPES: List[str] = Field(
+        default=["pdf", "docx", "txt", "md"]
+    )
+
+    # Celery
+    CELERY_BROKER_URL: str = "redis://localhost:6379/1"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
+
     @property
     def api_prefix(self) -> str:
         """Get API prefix."""
         return f"/api/{self.API_VERSION}"
+
+    @property
+    def redis_url(self) -> str:
+        """Get Redis URL."""
+        if self.REDIS_PASSWORD:
+            return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+        return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
 
 
 # Create global settings instance
