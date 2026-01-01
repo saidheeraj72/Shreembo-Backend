@@ -14,8 +14,11 @@ from src.services.embedding_service import embedding_service
 
 class DocumentService:
     @staticmethod
-    async def get_branches(org_id: UUID) -> List[dict]:
+    async def get_branches(org_id: Optional[UUID]) -> List[dict]:
         """Get active branches for organization."""
+        if not org_id:
+            return []
+            
         result = db.admin.table("branches").select("*").eq(
             "org_id", str(org_id)
         ).eq("is_active", True).execute()
@@ -29,12 +32,12 @@ class DocumentService:
         return branches
 
     @staticmethod
-    async def create_folder(org_id: UUID, owner_id: UUID, name: str,
+    async def create_folder(org_id: Optional[UUID], owner_id: UUID, name: str,
                            parent_id: Optional[UUID] = None, 
                            branch_id: Optional[UUID] = None,
                            description: str = None) -> dict:
         data = {
-            "org_id": str(org_id),
+            "org_id": str(org_id) if org_id else None,
             "owner_id": str(owner_id),
             "name": name,
             "node_type": "folder",
@@ -46,19 +49,32 @@ class DocumentService:
         return result.data[0] if result.data else None
 
     @staticmethod
-    async def get_folder(folder_id: UUID, org_id: UUID) -> Optional[dict]:
-        result = db.admin.table("storage_nodes").select("*").eq(
+    async def get_folder(folder_id: UUID, org_id: Optional[UUID]) -> Optional[dict]:
+        query = db.admin.table("storage_nodes").select("*").eq(
             "id", str(folder_id)
-        ).eq("org_id", str(org_id)).eq("node_type", "folder").maybe_single().execute()
+        ).eq("node_type", "folder")
+        
+        if org_id:
+            query = query.eq("org_id", str(org_id))
+        else:
+            query = query.is_("org_id", "null")
+            
+        result = query.maybe_single().execute()
         return result.data
 
     @staticmethod
-    async def get_folder_contents(org_id: UUID, 
+    async def get_folder_contents(org_id: Optional[UUID], 
                                 folder_id: Optional[UUID] = None,
-                                branch_id: Optional[UUID] = None) -> dict:
-        query = db.admin.table("storage_nodes").select("*").eq(
-            "org_id", str(org_id)
-        ).eq("status", "active")
+                                branch_id: Optional[UUID] = None,
+                                owner_id: Optional[UUID] = None) -> dict:
+        query = db.admin.table("storage_nodes").select("*").eq("status", "active")
+
+        if org_id:
+            query = query.eq("org_id", str(org_id))
+        else:
+            query = query.is_("org_id", "null")
+            if owner_id:
+                query = query.eq("owner_id", str(owner_id))
 
         if folder_id:
             query = query.eq("parent_id", str(folder_id))
@@ -66,7 +82,8 @@ class DocumentService:
             # Root of a branch
             query = query.eq("branch_id", str(branch_id)).is_("parent_id", "null")
         else:
-            # Fallback if neither provided (should technically be unreachable via API logic)
+            # Root (no parent)
+            # For personal users (no org, no branch), this lists root files/folders
             query = query.is_("parent_id", "null").is_("branch_id", "null")
 
         result = query.order("node_type").order("name").execute()
@@ -77,11 +94,13 @@ class DocumentService:
         return {"folders": folders, "documents": documents}
 
     @staticmethod
-    async def init_upload(org_id: UUID, owner_id: UUID, filename: str, content_type: str,
+    async def init_upload(org_id: Optional[UUID], owner_id: UUID, filename: str, content_type: str,
                           size_bytes: int, parent_id: Optional[UUID] = None,
                           branch_id: Optional[UUID] = None) -> dict:
         upload_id = str(uuid4())
-        s3_key = s3_client.generate_key(str(org_id), filename)
+        # Use user ID as prefix for personal files if org_id is None
+        prefix = str(org_id) if org_id else str(owner_id)
+        s3_key = s3_client.generate_key(prefix, filename)
 
         presigned = await s3_client.get_presigned_upload_url(s3_key, content_type)
 
@@ -90,7 +109,7 @@ class DocumentService:
             "upload_id": upload_id,
             "upload_url": presigned["upload_url"],
             "s3_key": s3_key,
-            "org_id": str(org_id),
+            "org_id": str(org_id) if org_id else None,
             "owner_id": str(owner_id),
             "filename": filename,
             "content_type": content_type,
@@ -100,7 +119,7 @@ class DocumentService:
         }
 
     @staticmethod
-    async def complete_upload(org_id: UUID, owner_id: UUID, upload_id: str, s3_key: str,
+    async def complete_upload(org_id: Optional[UUID], owner_id: UUID, upload_id: str, s3_key: str,
                               filename: str, content_type: str, size_bytes: int,
                               parent_id: Optional[UUID] = None, 
                               branch_id: Optional[UUID] = None,
@@ -109,7 +128,7 @@ class DocumentService:
         # Create document record
         ext = filename.rsplit(".", 1)[-1] if "." in filename else None
         data = {
-            "org_id": str(org_id),
+            "org_id": str(org_id) if org_id else None,
             "owner_id": str(owner_id),
             "name": filename,
             "node_type": "file",
@@ -138,7 +157,7 @@ class DocumentService:
             # Queue embedding generation (async)
             await embedding_service.process_document(
                 document_id=UUID(document["id"]),
-                org_id=org_id,
+                org_id=org_id, # Can be None
                 s3_key=s3_key,
                 file_type=ext,
                 user_id=str(owner_id),
@@ -148,22 +167,32 @@ class DocumentService:
         return document
 
     @staticmethod
-    async def get_document(doc_id: UUID, org_id: UUID) -> Optional[dict]:
-        result = db.admin.table("storage_nodes").select("*").eq(
-            "id", str(doc_id)
-        ).eq("org_id", str(org_id)).maybe_single().execute()
+    async def get_document(doc_id: UUID, org_id: Optional[UUID]) -> Optional[dict]:
+        query = db.admin.table("storage_nodes").select("*").eq("id", str(doc_id))
+        
+        if org_id:
+            query = query.eq("org_id", str(org_id))
+        else:
+            query = query.is_("org_id", "null")
+            
+        result = query.maybe_single().execute()
         return result.data
 
     @staticmethod
-    async def update_document(doc_id: UUID, org_id: UUID, **updates) -> Optional[dict]:
+    async def update_document(doc_id: UUID, org_id: Optional[UUID], **updates) -> Optional[dict]:
         updates["updated_at"] = datetime.utcnow().isoformat()
-        result = db.admin.table("storage_nodes").update(updates).eq(
-            "id", str(doc_id)
-        ).eq("org_id", str(org_id)).execute()
+        query = db.admin.table("storage_nodes").update(updates).eq("id", str(doc_id))
+        
+        if org_id:
+            query = query.eq("org_id", str(org_id))
+        else:
+            query = query.is_("org_id", "null")
+            
+        result = query.execute()
         return result.data[0] if result.data else None
 
     @staticmethod
-    async def delete_document(doc_id: UUID, org_id: UUID) -> bool:
+    async def delete_document(doc_id: UUID, org_id: Optional[UUID]) -> bool:
         doc = await DocumentService.get_document(doc_id, org_id)
         if not doc:
             return False
@@ -174,7 +203,7 @@ class DocumentService:
 
         # Delete from Pinecone
         from src.core.pinecone_client import pinecone_client
-        await pinecone_client.delete_by_document(str(doc_id), str(org_id))
+        await pinecone_client.delete_by_document(str(doc_id), str(org_id) if org_id else "personal")
 
         # Soft delete in DB
         db.admin.table("storage_nodes").update({
@@ -185,21 +214,21 @@ class DocumentService:
         return True
 
     @staticmethod
-    async def move_document(doc_id: UUID, org_id: UUID, target_folder_id: Optional[UUID]) -> Optional[dict]:
+    async def move_document(doc_id: UUID, org_id: Optional[UUID], target_folder_id: Optional[UUID]) -> Optional[dict]:
         return await DocumentService.update_document(
             doc_id, org_id,
             parent_id=str(target_folder_id) if target_folder_id else None
         )
 
     @staticmethod
-    async def get_download_url(doc_id: UUID, org_id: UUID) -> Optional[str]:
+    async def get_download_url(doc_id: UUID, org_id: Optional[UUID]) -> Optional[str]:
         doc = await DocumentService.get_document(doc_id, org_id)
         if not doc or not doc.get("s3_key"):
             return None
         return await s3_client.get_presigned_download_url(doc["s3_key"], doc["name"])
 
     @staticmethod
-    async def get_view_url(doc_id: UUID, org_id: UUID) -> Optional[str]:
+    async def get_view_url(doc_id: UUID, org_id: Optional[UUID]) -> Optional[str]:
         """Get presigned URL for viewing document in browser."""
         doc = await DocumentService.get_document(doc_id, org_id)
         if not doc or not doc.get("s3_key"):
@@ -207,7 +236,7 @@ class DocumentService:
         return await s3_client.get_presigned_view_url(doc["s3_key"], doc.get("mime_type"))
 
     @staticmethod
-    async def replicate_document(doc_id: UUID, org_id: UUID, target_branch_id: UUID) -> Optional[dict]:
+    async def replicate_document(doc_id: UUID, org_id: Optional[UUID], target_branch_id: UUID) -> Optional[dict]:
         """Replicate a document to another branch, including file, metadata, and embeddings."""
         from src.core.pinecone_client import pinecone_client
 
@@ -215,6 +244,12 @@ class DocumentService:
         source_doc = await DocumentService.get_document(doc_id, org_id)
         if not source_doc or source_doc.get("node_type") != "file":
             return None
+            
+        # Ensure target branch belongs to same org (basic check, could be more robust)
+        # If org_id is None (personal), we probably shouldn't allow replicating to a branch 
+        # unless we support moving from personal to org. For now, assume org_id must exist for branches.
+        if not org_id:
+            return None # Personal docs can't be replicated to branches (which belong to orgs) yet
 
         # Generate new S3 key for the copy
         new_s3_key = s3_client.generate_key(str(org_id), source_doc["name"])
@@ -259,7 +294,7 @@ class DocumentService:
     @staticmethod
     async def process_zip_upload(
         zip_bytes: bytes,
-        org_id: UUID,
+        org_id: Optional[UUID],
         owner_id: UUID,
         branch_id: UUID,
         parent_id: Optional[UUID] = None,
@@ -338,13 +373,15 @@ class DocumentService:
                             content_type = content_type or 'application/octet-stream'
 
                             # Generate S3 key and upload
-                            s3_key = s3_client.generate_key(str(org_id), filename)
+                            # Use org_id or owner_id as prefix
+                            prefix = str(org_id) if org_id else str(owner_id)
+                            s3_key = s3_client.generate_key(prefix, filename)
                             await s3_client.upload_file_bytes(file_data, s3_key, content_type)
 
                             # Create document record
                             ext = filename.rsplit(".", 1)[-1] if "." in filename else None
                             doc_data = {
-                                "org_id": str(org_id),
+                                "org_id": str(org_id) if org_id else None,
                                 "owner_id": str(owner_id),
                                 "name": filename,
                                 "node_type": "file",
@@ -353,7 +390,7 @@ class DocumentService:
                                 "file_extension": ext,
                                 "s3_key": s3_key,
                                 "parent_id": file_parent_id,
-                                "branch_id": str(branch_id),
+                                "branch_id": str(branch_id) if branch_id else None,
                                 "processing_status": "pending",
                                 "embedding_status": "pending",
                             }

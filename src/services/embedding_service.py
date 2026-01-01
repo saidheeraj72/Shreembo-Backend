@@ -65,7 +65,7 @@ class EmbeddingService:
         return chunks
 
     @staticmethod
-    async def process_document(document_id: UUID, org_id: UUID, s3_key: str,
+    async def process_document(document_id: UUID, org_id: Optional[UUID], s3_key: str,
                                file_type: str, user_id: str, upload_id: str):
         """Process document: extract text and generate embeddings."""
         try:
@@ -105,6 +105,7 @@ class EmbeddingService:
 
             await ws_manager.send_upload_progress(user_id, upload_id, "storing_embeddings", 80)
 
+            pinecone_namespace = str(org_id) if org_id else user_id # Consistent namespace
             # Prepare vectors for Pinecone
             vectors = []
             for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
@@ -113,14 +114,14 @@ class EmbeddingService:
                     'values': embedding,
                     'metadata': {
                         'document_id': str(document_id),
-                        'org_id': str(org_id),
+                        'org_id': pinecone_namespace, # Consistent identifier
                         'chunk_index': i,
                         'chunk_text': chunk[:500],
                     }
                 })
 
             # Store in Pinecone
-            await pinecone_client.upsert(vectors, str(org_id))
+            await pinecone_client.upsert(vectors, pinecone_namespace)
 
             # Update document status
             db.admin.table("storage_nodes").update({
@@ -139,7 +140,7 @@ class EmbeddingService:
             await ws_manager.send_upload_progress(user_id, upload_id, "failed", 0, error=str(e))
 
     @staticmethod
-    async def search(query: str, org_id: UUID, top_k: int = 10,
+    async def search(query: str, org_id: Optional[UUID], user_id: UUID, top_k: int = 10,
                      folder_id: Optional[UUID] = None) -> List[dict]:
         """Search documents using vector similarity."""
         # Get query embedding
@@ -150,8 +151,9 @@ class EmbeddingService:
         if folder_id:
             filter_dict = {'folder_id': str(folder_id)}
 
+        pinecone_namespace = str(org_id) if org_id else str(user_id) # Consistent namespace
         # Query Pinecone
-        results = await pinecone_client.query(query_embedding, str(org_id), top_k, filter_dict)
+        results = await pinecone_client.query(query_embedding, pinecone_namespace, top_k, filter_dict)
 
         # Get document details
         doc_ids = list(set(r.metadata.get('document_id') for r in results if r.metadata))

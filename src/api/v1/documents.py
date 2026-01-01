@@ -24,8 +24,9 @@ async def create_folder(
     org_context: dict = Depends(get_current_org_context)
 ):
     """Create a new folder."""
+    org_id = org_context.get("org_id")
     folder = await document_service.create_folder(
-        org_id=UUID(org_context["org_id"]),
+        org_id=UUID(org_id) if org_id else None,
         owner_id=user_id,
         name=data.name,
         parent_id=data.parent_id,
@@ -37,10 +38,19 @@ async def create_folder(
 
 @router.get("/folders", response_model=FolderContents)
 async def list_root_contents(
-    org_context: dict = Depends(get_current_org_context)
+    org_context: dict = Depends(get_current_org_context),
+    user_id: UUID = Depends(get_current_user_id)
 ):
-    """List root contents (Branches)."""
-    branches = await document_service.get_branches(UUID(org_context["org_id"]))
+    """List root contents (Branches or Personal Root)."""
+    org_id = org_context.get("org_id")
+    org_uuid = UUID(org_id) if org_id else None
+
+    if not org_uuid:
+        # Personal account - list root folders/files
+        contents = await document_service.get_folder_contents(org_id=None, owner_id=user_id)
+        return {"folder": None, **contents}
+
+    branches = await document_service.get_branches(org_uuid)
     # Map branches to FolderResponse format to simulate root folders
     branch_folders = []
     for b in branches:
@@ -70,14 +80,19 @@ async def list_root_contents(
 async def get_folder_contents(
     folder_id: UUID,
     type: str = Query("folder", regex="^(folder|branch)$"),
-    org_context: dict = Depends(get_current_org_context)
+    org_context: dict = Depends(get_current_org_context),
+    user_id: UUID = Depends(get_current_user_id)
 ):
     """Get folder (or branch) and its contents."""
-    org_id = UUID(org_context["org_id"])
+    org_id = org_context.get("org_id")
+    org_uuid = UUID(org_id) if org_id else None
     
     if type == "branch":
+        if not org_uuid:
+             raise HTTPException(status_code=400, detail="Personal accounts do not have branches")
+             
         # Get contents of the branch root
-        contents = await document_service.get_folder_contents(org_id, folder_id=None, branch_id=folder_id)
+        contents = await document_service.get_folder_contents(org_uuid, folder_id=None, branch_id=folder_id)
         # We don't have a "Folder" object for the branch here easily available without querying branches table
         # But FolderContents.folder is optional, so we can return None or construct one.
         # For UI consistency, it's better if we return the branch details as 'folder' metadata if possible.
@@ -86,10 +101,10 @@ async def get_folder_contents(
         return {"folder": None, **contents}
     else:
         # Standard folder
-        folder = await document_service.get_folder(folder_id, org_id)
+        folder = await document_service.get_folder(folder_id, org_uuid)
         if not folder:
              raise HTTPException(status_code=404, detail="Folder not found")
-        contents = await document_service.get_folder_contents(org_id, folder_id=folder_id)
+        contents = await document_service.get_folder_contents(org_uuid, folder_id=folder_id, owner_id=user_id)
         return {"folder": folder, **contents}
 
 
@@ -100,8 +115,9 @@ async def update_folder(
     org_context: dict = Depends(get_current_org_context)
 ):
     """Update folder."""
+    org_id = org_context.get("org_id")
     updates = data.model_dump(exclude_none=True)
-    return await document_service.update_document(folder_id, UUID(org_context["org_id"]), **updates)
+    return await document_service.update_document(folder_id, UUID(org_id) if org_id else None, **updates)
 
 
 @router.delete("/folders/{folder_id}")
@@ -110,7 +126,8 @@ async def delete_folder(
     org_context: dict = Depends(get_current_org_context)
 ):
     """Delete folder."""
-    await document_service.delete_document(folder_id, UUID(org_context["org_id"]))
+    org_id = org_context.get("org_id")
+    await document_service.delete_document(folder_id, UUID(org_id) if org_id else None)
     return {"success": True}
 
 
@@ -122,8 +139,9 @@ async def init_upload(
     org_context: dict = Depends(get_current_org_context)
 ):
     """Initialize document upload, returns presigned URL."""
+    org_id = org_context.get("org_id")
     result = await document_service.init_upload(
-        org_id=UUID(org_context["org_id"]),
+        org_id=UUID(org_id) if org_id else None,
         owner_id=user_id,
         filename=data.filename,
         content_type=data.content_type,
@@ -148,8 +166,9 @@ async def complete_upload(
     org_context: dict = Depends(get_current_org_context)
 ):
     """Complete document upload after S3 upload is done."""
+    org_id = org_context.get("org_id")
     return await document_service.complete_upload(
-        org_id=UUID(org_context["org_id"]),
+        org_id=UUID(org_id) if org_id else None,
         owner_id=user_id,
         upload_id=data.upload_id,
         s3_key=data.s3_key,
@@ -181,9 +200,10 @@ async def upload_zip(
     upload_id = str(uuid4())
 
     # Process the ZIP
+    org_id = org_context.get("org_id")
     result = await document_service.process_zip_upload(
         zip_bytes=zip_bytes,
-        org_id=UUID(org_context["org_id"]),
+        org_id=UUID(org_id) if org_id else None,
         owner_id=user_id,
         branch_id=UUID(branch_id),
         parent_id=UUID(parent_id) if parent_id else None,
@@ -209,7 +229,8 @@ async def get_document(
     org_context: dict = Depends(get_current_org_context)
 ):
     """Get document details."""
-    return await document_service.get_document(doc_id, UUID(org_context["org_id"]))
+    org_id = org_context.get("org_id")
+    return await document_service.get_document(doc_id, UUID(org_id) if org_id else None)
 
 
 @router.put("/documents/{doc_id}", response_model=DocumentResponse)
@@ -219,8 +240,9 @@ async def update_document(
     org_context: dict = Depends(get_current_org_context)
 ):
     """Update document."""
+    org_id = org_context.get("org_id")
     updates = data.model_dump(exclude_none=True)
-    return await document_service.update_document(doc_id, UUID(org_context["org_id"]), **updates)
+    return await document_service.update_document(doc_id, UUID(org_id) if org_id else None, **updates)
 
 
 @router.delete("/documents/{doc_id}")
@@ -229,7 +251,8 @@ async def delete_document(
     org_context: dict = Depends(get_current_org_context)
 ):
     """Delete document."""
-    await document_service.delete_document(doc_id, UUID(org_context["org_id"]))
+    org_id = org_context.get("org_id")
+    await document_service.delete_document(doc_id, UUID(org_id) if org_id else None)
     return {"success": True}
 
 
@@ -240,7 +263,8 @@ async def move_document(
     org_context: dict = Depends(get_current_org_context)
 ):
     """Move document to another folder."""
-    return await document_service.move_document(doc_id, UUID(org_context["org_id"]), data.target_folder_id)
+    org_id = org_context.get("org_id")
+    return await document_service.move_document(doc_id, UUID(org_id) if org_id else None, data.target_folder_id)
 
 
 @router.post("/documents/{doc_id}/replicate", response_model=DocumentResponse)
@@ -250,8 +274,9 @@ async def replicate_document(
     org_context: dict = Depends(get_current_org_context)
 ):
     """Replicate document to another branch (copies file, metadata, and embeddings)."""
+    org_id = org_context.get("org_id")
     result = await document_service.replicate_document(
-        doc_id, UUID(org_context["org_id"]), data.target_branch_id
+        doc_id, UUID(org_id) if org_id else None, data.target_branch_id
     )
     if not result:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -264,7 +289,8 @@ async def get_download_url(
     org_context: dict = Depends(get_current_org_context)
 ):
     """Get presigned download URL."""
-    url = await document_service.get_download_url(doc_id, UUID(org_context["org_id"]))
+    org_id = org_context.get("org_id")
+    url = await document_service.get_download_url(doc_id, UUID(org_id) if org_id else None)
     return {"download_url": url}
 
 
@@ -274,7 +300,8 @@ async def get_view_url(
     org_context: dict = Depends(get_current_org_context)
 ):
     """Get presigned URL for viewing document in browser."""
-    url = await document_service.get_view_url(doc_id, UUID(org_context["org_id"]))
+    org_id = org_context.get("org_id")
+    url = await document_service.get_view_url(doc_id, UUID(org_id) if org_id else None)
     if not url:
         raise HTTPException(status_code=404, detail="Document not found")
     return {"view_url": url}
@@ -286,10 +313,12 @@ async def search_documents(
     q: str = Query(..., min_length=1),
     top_k: int = Query(10, ge=1, le=50),
     folder_id: Optional[UUID] = Query(None),
-    org_context: dict = Depends(get_current_org_context)
+    org_context: dict = Depends(get_current_org_context),
+    user_id: UUID = Depends(get_current_user_id) # Inject user_id
 ):
     """Search documents using semantic search."""
-    return await embedding_service.search(q, UUID(org_context["org_id"]), top_k, folder_id)
+    org_id = org_context.get("org_id")
+    return await embedding_service.search(q, UUID(org_id) if org_id else None, user_id, top_k, folder_id)
 
 
 # WebSocket for upload progress
