@@ -11,6 +11,7 @@ from src.core.database import db
 from src.core.cache import cache
 from src.core.exceptions import NotFoundError, ConflictError, AuthorizationError
 from src.services.audit_service import audit_service
+from src.services.email_service import email_service
 from src.models.audit import AuditAction
 
 logger = logging.getLogger(__name__)
@@ -915,7 +916,25 @@ class AdminService:
         if not response.data:
             raise Exception("Failed to create invitation")
 
-        # TODO: Send invitation email via email service
+        # Send invitation email
+        try:
+            # Fetch details for email
+            org_response = db.admin.table("organizations").select("name").eq("id", str(org_id)).single().execute()
+            inviter_response = db.admin.table("profiles").select("full_name").eq("id", str(invited_by)).single().execute()
+            
+            org_name = org_response.data["name"] if org_response.data else "Organization"
+            inviter_name = inviter_response.data["full_name"] if inviter_response.data else "An admin"
+            
+            email_service.send_invitation_email(
+                to_email=email,
+                invite_token=invite_token,
+                inviter_name=inviter_name,
+                org_name=org_name,
+                message=message
+            )
+        except Exception as e:
+            logger.error(f"Failed to send invitation email: {e}")
+            # Continue execution, don't fail the API call just because email failed
 
         # Log audit
         await audit_service.log(
@@ -1028,7 +1047,24 @@ class AdminService:
             .execute()
         )
 
-        # TODO: Send invitation email via email service
+        # Send invitation email
+        try:
+            # Fetch details for email
+            org_response = db.admin.table("organizations").select("name").eq("id", str(org_id)).single().execute()
+            resent_by_response = db.admin.table("profiles").select("full_name").eq("id", str(resent_by)).single().execute()
+            
+            org_name = org_response.data["name"] if org_response.data else "Organization"
+            resent_by_name = resent_by_response.data["full_name"] if resent_by_response.data else "An admin"
+            
+            email_service.send_invitation_email(
+                to_email=existing.data["email"],
+                invite_token=new_token,
+                inviter_name=resent_by_name,
+                org_name=org_name,
+                message="Invitation resent."
+            )
+        except Exception as e:
+            logger.error(f"Failed to resend invitation email: {e}")
 
         # Log audit
         await audit_service.log(

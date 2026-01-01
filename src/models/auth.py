@@ -27,6 +27,7 @@ class SignupRequest(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8)
     full_name: str
+    account_type: str = "personal"
 
 
 class SignupResponse(BaseModel):
@@ -67,3 +68,11 @@ class ChangePasswordRequest(BaseModel):
 
     current_password: str
     new_password: str = Field(..., min_length=8)
+
+
+class AcceptInvitationRequest(BaseModel):
+    """Accept invitation request model."""
+
+    token: str
+    password: str = Field(..., min_length=8)
+    full_name: str

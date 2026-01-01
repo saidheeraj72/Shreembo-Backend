@@ -53,16 +53,16 @@ class Settings(BaseSettings):
     CACHE_TTL: int = 300  # 5 minutes
 
     # Email (SMTP)
-    SMTP_HOST: str = "saidheeraj987@gmail.com"
+    SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
-    SMTP_USER: Optional[str] = None
+    SMTP_USER: Optional[str] = "saidheeraj985@gmail.com"
     SMTP_PASSWORD: Optional[str] = "Sai@17895"
-    SMTP_FROM_EMAIL: Optional[str] = None
+    SMTP_FROM_EMAIL: Optional[str] = "saidheeraj985@gmail.com"
     SMTP_FROM_NAME: str = "Enterprise DMS"
-    SMTP_ENABLED: bool = False
+    SMTP_ENABLED: bool = True
 
     # Frontend
-    FRONTEND_URL: str = "http://localhost:8080"
+    FRONTEND_URL: str = "http://localhost:5173"
 
     # Security
     SECRET_KEY: str = Field(default="change-this-in-production-secret-key-min-32-chars")

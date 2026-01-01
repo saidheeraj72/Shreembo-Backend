@@ -4,7 +4,7 @@ Authentication API endpoints.
 from fastapi import APIRouter, Depends, Request
 from uuid import UUID
 
-from src.models.auth import LoginRequest, LoginResponse, SignupRequest, SignupResponse
+from src.models.auth import LoginRequest, LoginResponse, SignupRequest, SignupResponse, AcceptInvitationRequest
 from src.models.user import UserWithPermissions
 from src.services.auth_service import auth_service
 from src.core.dependencies import get_current_user, get_current_org_context, get_client_ip, get_user_agent
@@ -31,6 +31,7 @@ async def signup(
         email=data.email,
         password=data.password,
         full_name=data.full_name,
+        account_type=data.account_type,
         ip_address=ip_address,
         user_agent=user_agent,
     )
@@ -103,3 +104,29 @@ async def logout(
         "success": True,
         "message": "Logged out successfully",
     }
+
+
+@router.post("/accept-invite", response_model=LoginResponse)
+async def accept_invite(
+    request: Request,
+    data: AcceptInvitationRequest,
+):
+    """
+    Accept an invitation to join an organization.
+    """
+    ip_address = get_client_ip(request)
+    user_agent = get_user_agent(request)
+
+    result = await auth_service.accept_invitation(
+        invite_token=data.token,
+        password=data.password,
+        full_name=data.full_name,
+        ip_address=ip_address,
+        user_agent=user_agent,
+    )
+
+    return LoginResponse(
+        access_token=result["access_token"],
+        refresh_token=result["refresh_token"],
+        user=result["user"],
+    )
