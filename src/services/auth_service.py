@@ -288,6 +288,7 @@ class AuthService:
     @staticmethod
     async def accept_invitation(
         invite_token: str,
+        email: str,
         password: str,
         full_name: str,
         ip_address: Optional[str] = None,
@@ -298,6 +299,7 @@ class AuthService:
 
         Args:
             invite_token: Invitation token
+            email: User email (must match invitation)
             password: Password for new account
             full_name: User full name
             ip_address: Client IP
@@ -306,7 +308,7 @@ class AuthService:
         Returns:
             Dictionary with access_token, refresh_token, and user data
         """
-        from src.core.exceptions import NotFoundError
+        from src.core.exceptions import NotFoundError, BadRequestError
 
         # 1. Find invitation
         invitation_response = (
@@ -323,6 +325,12 @@ class AuthService:
             raise NotFoundError("Invalid or expired invitation")
 
         invitation = invitation_response.data
+        
+        # Verify email matches
+        if invitation["email"].lower() != email.lower():
+            raise BadRequestError("Email address does not match the invitation.")
+            
+        # Continue with extracted email from invitation (trusted source)
         email = invitation["email"]
         org_id = invitation["org_id"]
 

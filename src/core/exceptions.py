@@ -54,6 +54,13 @@ class ConflictError(AppException):
         super().__init__(message, status_code=409, detail=detail)
 
 
+class BadRequestError(AppException):
+    """Bad request error."""
+
+    def __init__(self, message: str = "Bad request", detail: Optional[Any] = None):
+        super().__init__(message, status_code=400, detail=detail)
+
+
 class RateLimitError(AppException):
     """Rate limit exceeded."""
 

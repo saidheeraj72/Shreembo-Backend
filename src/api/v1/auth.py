@@ -119,6 +119,7 @@ async def accept_invite(
 
     result = await auth_service.accept_invitation(
         invite_token=data.token,
+        email=data.email,
         password=data.password,
         full_name=data.full_name,
         ip_address=ip_address,
