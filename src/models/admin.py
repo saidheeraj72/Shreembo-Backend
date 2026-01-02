@@ -113,6 +113,7 @@ class OrganizationMemberResponse(UUIDModel):
     user: Optional[dict] = None
     role: Optional[dict] = None
     branches: List[dict] = Field(default_factory=list)
+    permissions: Optional[dict] = None
 
     class Config:
         from_attributes = True
@@ -144,6 +145,12 @@ class UserWithRole(BaseModel):
     department: Optional[str] = None
     joined_at: Optional[datetime] = None
     last_active_at: Optional[datetime] = None
+
+
+class UserPermissionGrant(BaseModel):
+    """User permission grant request."""
+    permission_id: UUID
+    is_granted: bool = True
 
 
 # ==========================================

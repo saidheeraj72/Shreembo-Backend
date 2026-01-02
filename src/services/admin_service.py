@@ -545,7 +545,7 @@ class AdminService:
         # Get member record with profile and role
         member_response = (
             db.admin.table("organization_members")
-            .select("*, profiles(*), roles(*)")
+            .select("*, profiles!organization_members_user_id_fkey(*), roles(*)")
             .eq("org_id", str(org_id))
             .eq("user_id", str(user_id))
             .single()

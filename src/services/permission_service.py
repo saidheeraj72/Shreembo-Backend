@@ -240,14 +240,16 @@ class PermissionService:
         user_id: UUID,
         permission_id: UUID,
         granted_by: UUID,
+        is_granted: bool = True,
     ) -> bool:
         """
-        Grant a permission to a user (override).
+        Grant or deny a permission to a user (override).
 
         Args:
             user_id: User UUID
             permission_id: Permission UUID
             granted_by: User granting the permission
+            is_granted: True to grant, False to deny
 
         Returns:
             True if successful
@@ -256,7 +258,7 @@ class PermissionService:
             {
                 "user_id": str(user_id),
                 "permission_id": str(permission_id),
-                "is_granted": True,
+                "is_granted": is_granted,
                 "granted_by": str(granted_by),
             },
             on_conflict="user_id,permission_id",

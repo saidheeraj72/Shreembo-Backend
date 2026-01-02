@@ -10,6 +10,7 @@ from src.api.deps.permissions import require_permission
 from src.services.admin_service import admin_service
 from src.services.audit_service import audit_service
 from src.services.group_service import group_service
+from src.services.permission_service import permission_service
 from src.models.admin import (
     Branch,
     BranchCreate,
@@ -20,6 +21,7 @@ from src.models.admin import (
     MemberUpdate,
     RoleChangeRequest,
     UserWithRole,
+    UserPermissionGrant,
     InvitationCreate,
     InvitationResponse,
     RoleCreate,
@@ -414,6 +416,62 @@ async def change_user_role(
     return {
         "message": "User role changed successfully",
         "member": member,
+    }
+
+
+@router.post(
+    "/users/{user_id}/permissions",
+    response_model=dict,
+    dependencies=[Depends(require_permission("users", "manage_permissions"))],
+)
+async def grant_user_permission(
+    user_id: UUID,
+    data: UserPermissionGrant,
+    user: dict = Depends(get_current_user),
+    org_context: dict = Depends(get_current_org_context),
+):
+    """
+    Grant a specific permission to a user (override role).
+
+    **Requires:** users.manage_permissions permission
+    """
+    current_user_id = UUID(user["id"])
+
+    await permission_service.grant_user_permission(
+        user_id=user_id,
+        permission_id=data.permission_id,
+        is_granted=data.is_granted,
+        granted_by=current_user_id,
+    )
+
+    return {
+        "message": "Permission granted/updated successfully",
+    }
+
+
+@router.delete(
+    "/users/{user_id}/permissions/{permission_id}",
+    response_model=dict,
+    dependencies=[Depends(require_permission("users", "manage_permissions"))],
+)
+async def revoke_user_permission(
+    user_id: UUID,
+    permission_id: UUID,
+    user: dict = Depends(get_current_user),
+    org_context: dict = Depends(get_current_org_context),
+):
+    """
+    Revoke a user permission override.
+
+    **Requires:** users.manage_permissions permission
+    """
+    await permission_service.revoke_user_permission(
+        user_id=user_id,
+        permission_id=permission_id,
+    )
+
+    return {
+        "message": "Permission revoked from user successfully",
     }
 
 
