@@ -83,6 +83,40 @@ async def get_current_user(
     return response.data
 
 
+async def get_current_user_optional(
+    authorization: str = Header(None),
+) -> Optional[dict]:
+    """
+    Get current user if authenticated, else None.
+
+    Args:
+        authorization: Authorization header
+
+    Returns:
+        User profile data or None
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+
+    try:
+        token = authorization.replace("Bearer ", "")
+        payload = verify_supabase_jwt(token)
+        if not payload or not payload.get("sub"):
+            return None
+        
+        user_id = payload.get("sub")
+        response = (
+            db.admin.table("profiles")
+            .select("*")
+            .eq("id", str(user_id))
+            .single()
+            .execute()
+        )
+        return response.data
+    except Exception:
+        return None
+
+
 async def get_current_org_context(
     user: dict = Depends(get_current_user),
 ) -> dict:

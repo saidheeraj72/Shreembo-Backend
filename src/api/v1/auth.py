@@ -7,7 +7,7 @@ from uuid import UUID
 from src.models.auth import LoginRequest, LoginResponse, SignupRequest, SignupResponse, AcceptInvitationRequest
 from src.models.user import UserWithPermissions
 from src.services.auth_service import auth_service
-from src.core.dependencies import get_current_user, get_current_org_context, get_client_ip, get_user_agent
+from src.core.dependencies import get_current_user, get_current_org_context, get_client_ip, get_user_agent, get_current_user_optional
 
 router = APIRouter()
 
@@ -110,6 +110,7 @@ async def logout(
 async def accept_invite(
     request: Request,
     data: AcceptInvitationRequest,
+    current_user: dict | None = Depends(get_current_user_optional),
 ):
     """
     Accept an invitation to join an organization.
@@ -124,6 +125,7 @@ async def accept_invite(
         full_name=data.full_name,
         ip_address=ip_address,
         user_agent=user_agent,
+        current_user=current_user,
     )
 
     return LoginResponse(

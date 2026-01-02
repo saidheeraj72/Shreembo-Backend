@@ -75,5 +75,5 @@ class AcceptInvitationRequest(BaseModel):
 
     token: str
     email: EmailStr
-    password: str = Field(..., min_length=8)
-    full_name: str
+    password: Optional[str] = Field(None, min_length=8)
+    full_name: Optional[str] = None

@@ -289,10 +289,11 @@ class AuthService:
     async def accept_invitation(
         invite_token: str,
         email: str,
-        password: str,
-        full_name: str,
+        password: Optional[str] = None,
+        full_name: Optional[str] = None,
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
+        current_user: Optional[Dict] = None,
     ) -> Dict:
         """
         Accept an invitation and create/link user account.
@@ -300,15 +301,16 @@ class AuthService:
         Args:
             invite_token: Invitation token
             email: User email (must match invitation)
-            password: Password for new account
-            full_name: User full name
+            password: Password for new account (optional if logged in)
+            full_name: User full name (optional if logged in)
             ip_address: Client IP
             user_agent: Client user agent
+            current_user: Currently logged in user (optional)
 
         Returns:
             Dictionary with access_token, refresh_token, and user data
         """
-        from src.core.exceptions import NotFoundError, BadRequestError
+        from src.core.exceptions import NotFoundError, BadRequestError, AuthenticationError
 
         # 1. Find invitation
         invitation_response = (
@@ -331,14 +333,80 @@ class AuthService:
             raise BadRequestError("Email address does not match the invitation.")
             
         # Continue with extracted email from invitation (trusted source)
-        email = invitation["email"]
+        invite_email = invitation["email"]
         org_id = invitation["org_id"]
 
-        # 2. Check if user exists
+        user_id = None
+        
+        # Handle Logged-in User Case
+        if current_user:
+            # Verify logged-in user email matches invite
+            if current_user["email"].lower() != invite_email.lower():
+                raise BadRequestError("Logged-in user email does not match invitation.")
+            
+            user_id = current_user["id"]
+            
+            # Update profile to link to org
+            # Note: We update org_id only if not already set, OR we might overwrite if moving?
+            # Usually, switching orgs is a context switch, not a profile overwrite.
+            # But the 'profiles' table has 'org_id' which implies primary/current org.
+            # For this MVP, we set it.
+            db.admin.table("profiles").update({
+                "org_id": org_id,
+                "status": "active", 
+                "account_type": "organization"
+            }).eq("id", user_id).execute()
+            
+            # Upsert into organization_members
+            db.admin.table("organization_members").upsert({
+                "org_id": org_id,
+                "user_id": user_id,
+                "role_id": invitation["role_id"],
+                "status": "active",
+                "invited_by": invitation["invited_by"],
+                "invited_at": invitation["invited_at"],
+                "joined_at": datetime.utcnow().isoformat()
+            }, on_conflict="org_id, user_id").execute()
+            
+            # Mark invitation accepted
+            db.admin.table("organization_invitations").update({
+                "status": "accepted",
+                "accepted_at": datetime.utcnow().isoformat(),
+                "accepted_by": user_id
+            }).eq("id", invitation["id"]).execute()
+            
+            # Return current session tokens (we don't have them here, so we might need to regenerate or assume client has them)
+            # BUT the return type expects tokens.
+            # Since user is already logged in, the client actually has tokens.
+            # However, to be consistent, we can generate new tokens or just return dummy/refreshed ones.
+            # Ideally, we call login() but we don't have the password.
+            # Supabase session management is tricky here if we don't have the session object.
+            # We can create a custom token using `create_access_token` if we were managing it fully custom.
+            # But we rely on Supabase Auth.
+            # Workaround: Return empty tokens and let client keep using existing ones?
+            # Or better: The client refetches 'me' after this call.
+            # We'll return dummy tokens and the updated user object.
+            
+            # Refresh user profile
+            updated_profile = (
+                db.admin.table("profiles")
+                .select("*")
+                .eq("id", user_id)
+                .single()
+                .execute()
+            )
+            
+            return {
+                "access_token": "", # Client should ignore or reuse existing
+                "refresh_token": "",
+                "user": updated_profile.data
+            }
+
+        # 2. Check if user exists (Not logged in but has account)
         existing_user_response = (
             db.admin.table("profiles")
             .select("*")
-            .eq("email", email)
+            .eq("email", invite_email)
             .execute()
         )
         
@@ -348,10 +416,9 @@ class AuthService:
             # User exists - link to organization
             user_id = existing_user_response.data[0]["id"]
             
-            # If user already has an org, we might want to handle that
-            # For now, we'll overwrite or check logic.
-            # Assuming user can only be in one org at a time for this model
-            
+            if not password:
+                 raise BadRequestError("Password is required to verify identity.")
+
             db.admin.table("profiles").update({
                 "org_id": org_id,
                 "status": "active", # Ensure active
@@ -369,25 +436,11 @@ class AuthService:
                 "joined_at": datetime.utcnow().isoformat()
             }, on_conflict="org_id, user_id").execute()
             
-            # Log in the user to get tokens (re-using login logic)
-            # This requires the user to know their existing password?
-            # Wait, if they are accepting an invite, they might expect to just 'get in'.
-            # But we can't generate a token without their password if using Supabase Auth directly.
-            # If the user exists, we probably shouldn't be asking for a password in `accept_invitation`
-            # unless we are resetting it.
-            # For simplicity, if user exists, we expect them to login normally, 
-            # BUT the invite link usually logs you in.
-            # If we can't sign them in without password, we should just link them and tell them to login.
-            
-            # However, the prompt implies a flow where they provide password.
-            # If they provide a password and the user exists, we could try to sign in with it.
-            
+            # Login to verify password and get tokens
             try:
-                 login_result = await AuthService.login(email, password, ip_address, user_agent)
+                 login_result = await AuthService.login(invite_email, password, ip_address, user_agent)
             except AuthenticationError:
-                # If password doesn't match, we still linked them, but can't return tokens.
-                # We might raise an error saying "User exists, please login"
-                raise ConflictError("User already exists. Please login to access your organization.")
+                raise ConflictError("User already exists but password incorrect. Please login first.")
                 
             # Update invitation status
             db.admin.table("organization_invitations").update({
@@ -400,10 +453,15 @@ class AuthService:
 
         else:
             # 3. Create new user
+            if not password:
+                 raise BadRequestError("Password is required to create account.")
+            if not full_name:
+                 raise BadRequestError("Full Name is required.")
+
             try:
                 # Reuse signup logic but with specific org details
                 auth_response = db.anon.auth.sign_up({
-                    "email": email,
+                    "email": invite_email,
                     "password": password,
                 })
             except Exception as e:
@@ -414,7 +472,7 @@ class AuthService:
             # Create profile linked to org
             profile_data = {
                 "id": user_id,
-                "email": email.lower(),
+                "email": invite_email.lower(),
                 "full_name": full_name,
                 "account_type": "organization",
                 "org_id": org_id,
@@ -446,7 +504,7 @@ class AuthService:
             await audit_service.log(
                 org_id=UUID(org_id),
                 user_id=UUID(user_id),
-                user_email=email,
+                user_email=invite_email,
                 user_name=full_name,
                 action=AuditAction.CREATE,
                 resource_type="user",
@@ -458,7 +516,7 @@ class AuthService:
 
             # Return tokens
             # Since we just signed up, we can sign in to get tokens
-            return await AuthService.login(email, password, ip_address, user_agent)
+            return await AuthService.login(invite_email, password, ip_address, user_agent)
 
 
 # Global auth service instance
