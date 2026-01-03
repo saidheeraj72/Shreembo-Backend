@@ -364,11 +364,22 @@ class PermissionService:
             "granted_by": str(granted_by),
         }
 
-        # Upsert to handle existing permissions
-        result = db.admin.table("node_permissions").upsert(
-            data,
-            on_conflict="node_id,user_id",
-        ).execute()
+        # Check if permission already exists
+        existing = db.admin.table("node_permissions").select("id").eq(
+            "node_id", str(folder_id)
+        ).eq("user_id", str(user_id)).maybe_single().execute()
+
+        if existing and existing.data:
+            # Update existing permission
+            result = db.admin.table("node_permissions").update(
+                {
+                    "permission": permission,
+                    "granted_by": str(granted_by)
+                }
+            ).eq("id", existing.data["id"]).execute()
+        else:
+            # Insert new permission
+            result = db.admin.table("node_permissions").insert(data).execute()
 
         # Invalidate cache
         await cache.delete_pattern(f"folder_access:{user_id}:*")
