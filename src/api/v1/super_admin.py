@@ -2,11 +2,13 @@
 Super Admin API endpoints.
 """
 from typing import List
+from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 
 from src.models.super_admin import SuperAdmin, SuperAdminVerifyResponse
 from src.models.user import UserProfile
 from src.services.super_admin_service import super_admin_service
+from src.services.limit_service import limit_service
 from src.api.deps.permissions import require_super_admin
 from src.core.dependencies import get_current_user
 
@@ -286,6 +288,55 @@ async def get_platform_statistics(
             "total_storage_gb": total_storage_gb,
             "total_storage_bytes": total_storage_bytes,
         },
+    }
+
+
+@router.get("/organization-usage")
+async def get_organization_usage(
+    _: dict = Depends(require_super_admin),
+):
+    """
+    Get usage statistics for all organizations.
+
+    **Requires:** Super admin access
+
+    Returns usage statistics (tokens, chat, RAG) for each organization.
+    """
+    from src.core.database import db
+
+    # Get all organizations
+    orgs_response = (
+        db.admin.table("organizations")
+        .select("*")
+        .order("created_at", desc=True)
+        .execute()
+    )
+
+    organizations_with_usage = []
+
+    for org in orgs_response.data:
+        org_id = UUID(org["id"])
+
+        # Get usage stats for this organization
+        try:
+            usage_stats = await limit_service.get_usage_stats("organization", org_id)
+        except Exception:
+            # If stats aren't available, use defaults
+            usage_stats = None
+
+        organizations_with_usage.append({
+            **org,
+            "monthly_tokens_used": usage_stats.monthly_tokens_used if usage_stats else 0,
+            "monthly_tokens_limit": usage_stats.monthly_tokens_limit if usage_stats else 1000000,
+            "daily_chat_requests_used": usage_stats.daily_chat_requests_used if usage_stats else 0,
+            "daily_chat_requests_limit": usage_stats.daily_chat_requests_limit if usage_stats else 1000,
+            "daily_rag_requests_used": usage_stats.daily_rag_requests_used if usage_stats else 0,
+            "daily_rag_requests_limit": usage_stats.daily_rag_requests_limit if usage_stats else 500,
+        })
+
+    return {
+        "total": len(organizations_with_usage),
+        "organizations": organizations_with_usage,
     }
 
 

@@ -1,6 +1,7 @@
 """RAG (Retrieval-Augmented Generation) service."""
 from typing import Optional, List, Dict, Any, AsyncGenerator
 from uuid import UUID
+import json
 
 from openai import AsyncOpenAI
 
@@ -429,6 +430,171 @@ class RAGService:
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens
         }
+
+
+    @staticmethod
+    async def generate_response_with_tools(
+        user_message: str,
+        session_id: UUID,
+        user_id: UUID,
+        org_id: Optional[UUID],
+        rag_enabled: bool = True,
+        web_search_enabled: bool = False,
+        use_function_calling: bool = True
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Generate streaming response with intelligent tool calling.
+
+        This enhanced version uses OpenAI function calling to determine which tools to use,
+        providing more intelligent decisions about when to search documents or the web.
+
+        Yields dictionaries with:
+        - type: 'tool_call' | 'rag_context' | 'web_search' | 'chunk' | 'done' | 'error'
+        - content/data based on type
+        """
+        # Import here to avoid circular dependency
+        from src.services.tools_service import tools_service
+
+        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+
+        rag_results = []
+        web_results = []
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+
+        # Get chat history
+        history = await chat_service.get_chat_history(
+            session_id,
+            limit=settings.CHAT_HISTORY_LIMIT
+        )
+
+        try:
+            # 1. Determine which tools to use (if function calling is enabled)
+            tools_to_use = []
+            if use_function_calling and (rag_enabled or web_search_enabled):
+                tools_to_use = await tools_service.determine_tools_to_use(
+                    user_message, history, rag_enabled, web_search_enabled
+                )
+
+                # Notify frontend that tools are being called
+                if tools_to_use:
+                    yield {
+                        "type": "tool_call",
+                        "tools": [t["name"] for t in tools_to_use]
+                    }
+
+            # 2. Execute tools
+            for tool in tools_to_use:
+                tool_name = tool["name"]
+                try:
+                    tool_args = json.loads(tool["arguments"]) if isinstance(tool["arguments"], str) else tool["arguments"]
+                except json.JSONDecodeError:
+                    tool_args = {"query": user_message}
+
+                result = await tools_service.execute_tool(
+                    tool_name=tool_name,
+                    tool_arguments=tool_args,
+                    user_id=user_id,
+                    org_id=org_id,
+                    session_id=session_id
+                )
+
+                if tool_name == "search_documents" and not result.get("error"):
+                    rag_results = result.get("results", [])
+                    if rag_results:
+                        yield {
+                            "type": "rag_context",
+                            "data": rag_results
+                        }
+                elif tool_name == "search_web" and not result.get("error"):
+                    web_results = result.get("results", [])
+                    if web_results:
+                        yield {
+                            "type": "web_search",
+                            "data": web_results
+                        }
+
+            # 3. Build context
+            context = RAGService.build_context(rag_results, web_results)
+
+            # 4. Build messages
+            messages = [
+                {"role": "system", "content": settings.RAG_SYSTEM_PROMPT}
+            ]
+
+            if context:
+                messages.append({
+                    "role": "system",
+                    "content": f"Here is relevant context to help answer the user's question:\n\n{context}"
+                })
+
+            messages.extend(history)
+            messages.append({"role": "user", "content": user_message})
+
+            # 5. Stream response
+            stream = await client.chat.completions.create(
+                model=settings.OPENAI_CHAT_MODEL,
+                messages=messages,
+                max_tokens=settings.OPENAI_CHAT_MAX_TOKENS,
+                temperature=settings.OPENAI_CHAT_TEMPERATURE,
+                stream=True,
+                stream_options={"include_usage": True}
+            )
+
+            full_response = []
+            async for chunk in stream:
+                # Check for usage in the final chunk
+                if hasattr(chunk, 'usage') and chunk.usage:
+                    total_prompt_tokens = chunk.usage.prompt_tokens
+                    total_completion_tokens = chunk.usage.completion_tokens
+
+                if chunk.choices and chunk.choices[0].delta.content:
+                    content = chunk.choices[0].delta.content
+                    full_response.append(content)
+                    yield {
+                        "type": "chunk",
+                        "content": content
+                    }
+
+            # Build sources for response
+            sources = [
+                {
+                    "document_id": r["document_id"],
+                    "document_name": r["document_name"],
+                    "chunk_index": r["chunk_index"],
+                    "chunk_text": r["chunk_text"][:200],  # Truncate for response
+                    "score": r["score"]
+                }
+                for r in rag_results
+            ]
+
+            # Track token usage
+            await token_usage_service.track_usage(
+                user_id=user_id,
+                org_id=org_id,
+                prompt_tokens=total_prompt_tokens,
+                completion_tokens=total_completion_tokens,
+                is_rag=bool(rag_results),
+                is_web_search=bool(web_results)
+            )
+
+            # 6. Final result
+            yield {
+                "type": "done",
+                "content": "".join(full_response),
+                "rag_results": rag_results,
+                "web_results": web_results,
+                "sources": sources,
+                "prompt_tokens": total_prompt_tokens,
+                "completion_tokens": total_completion_tokens,
+                "total_tokens": total_prompt_tokens + total_completion_tokens
+            }
+
+        except Exception as e:
+            yield {
+                "type": "error",
+                "error": str(e)
+            }
 
 
 rag_service = RAGService()

@@ -6,6 +6,7 @@ from fastapi import WebSocket
 
 from src.services.rag_service import rag_service
 from src.services.chat_service import chat_service
+from src.services.limit_service import limit_service
 
 
 class ChatConnectionManager:
@@ -163,6 +164,36 @@ class ChatConnectionManager:
             if web_search_enabled is None:
                 web_search_enabled = session["web_search_enabled"]
 
+            # Check usage limits
+            limit_checks = await limit_service.check_all_limits(
+                user_id=user_id,
+                org_id=org_id,
+                is_rag=rag_enabled
+            )
+
+            # Check if any limit is exceeded
+            for check_name, check_result in limit_checks.items():
+                if not check_result.allowed:
+                    await websocket.send_json({
+                        "type": "stream_error",
+                        "session_id": str(session_id),
+                        "error": check_result.message or f"Usage limit exceeded: {check_name}",
+                        "limit_type": check_result.limit_type,
+                        "current_usage": check_result.current_usage,
+                        "limit_value": check_result.limit_value,
+                        "reset_at": check_result.reset_at.isoformat() if check_result.reset_at else None
+                    })
+                    return
+
+            # Track the request
+            await limit_service.track_request(
+                user_id=user_id,
+                org_id=org_id,
+                is_chat=True,
+                is_rag=rag_enabled,
+                is_web_search=web_search_enabled
+            )
+
             # Save user message
             user_msg = await chat_service.add_message(
                 session_id=session_id,
@@ -193,13 +224,15 @@ class ChatConnectionManager:
             prompt_tokens = 0
             completion_tokens = 0
 
-            async for chunk in rag_service.generate_response(
+            # Use the new tool-calling enabled method
+            async for chunk in rag_service.generate_response_with_tools(
                 user_message=content,
                 session_id=session_id,
                 user_id=user_id,
                 org_id=org_id,
                 rag_enabled=rag_enabled,
-                web_search_enabled=web_search_enabled
+                web_search_enabled=web_search_enabled,
+                use_function_calling=True
             ):
                 # Check if generation was stopped
                 if not self.active_generations.get(generation_key, False):
@@ -211,12 +244,20 @@ class ChatConnectionManager:
                     })
                     break
 
-                if chunk["type"] == "rag_context":
+                if chunk["type"] == "tool_call":
+                    # Notify frontend that tools are being executed
+                    await websocket.send_json({
+                        "type": "tool_call",
+                        "session_id": str(session_id),
+                        "tools": chunk["tools"]
+                    })
+
+                elif chunk["type"] == "rag_context":
                     rag_results = chunk["data"]
                     await websocket.send_json({
                         "type": "rag_context",
                         "session_id": str(session_id),
-                        "sources": rag_results
+                        "data": rag_results
                     })
 
                 elif chunk["type"] == "web_search":
@@ -224,7 +265,7 @@ class ChatConnectionManager:
                     await websocket.send_json({
                         "type": "web_search",
                         "session_id": str(session_id),
-                        "results": web_results
+                        "data": web_results
                     })
 
                 elif chunk["type"] == "chunk":
