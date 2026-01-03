@@ -54,8 +54,6 @@ async def list_root_contents(
     # Map branches to FolderResponse format to simulate root folders
     branch_folders = []
     for b in branches:
-        # Construct a FolderResponse-compatible dict
-        # Ensure 'id' is preserved as UUID
         branch_folders.append(FolderResponse(
             id=b["id"],
             name=b["name"],
@@ -63,15 +61,15 @@ async def list_root_contents(
             parent_id=None,
             branch_id=None,
             description=None,
-            owner_id=UUID(b["owner_id"]), # Placeholder owner
+            owner_id=UUID(b["owner_id"]),
             created_at=b["created_at"],
             updated_at=b["updated_at"],
             children_count=0
         ))
 
     return {
-        "folder": None, 
-        "folders": branch_folders, 
+        "folder": None,
+        "folders": branch_folders,
         "documents": []
     }
 
@@ -86,25 +84,24 @@ async def get_folder_contents(
     """Get folder (or branch) and its contents."""
     org_id = org_context.get("org_id")
     org_uuid = UUID(org_id) if org_id else None
-    
+
     if type == "branch":
         if not org_uuid:
              raise HTTPException(status_code=400, detail="Personal accounts do not have branches")
-             
-        # Get contents of the branch root
-        contents = await document_service.get_folder_contents(org_uuid, folder_id=None, branch_id=folder_id)
-        # We don't have a "Folder" object for the branch here easily available without querying branches table
-        # But FolderContents.folder is optional, so we can return None or construct one.
-        # For UI consistency, it's better if we return the branch details as 'folder' metadata if possible.
-        # But 'document_service.get_folder' looks at storage_nodes. 
-        # We'll return None for 'folder' metadata for now, UI should handle it via breadcrumbs.
+
+        # Get contents of the branch root (filtered by user permissions)
+        contents = await document_service.get_folder_contents(
+            org_uuid, folder_id=None, branch_id=folder_id, user_id=user_id
+        )
         return {"folder": None, **contents}
     else:
         # Standard folder
         folder = await document_service.get_folder(folder_id, org_uuid)
         if not folder:
              raise HTTPException(status_code=404, detail="Folder not found")
-        contents = await document_service.get_folder_contents(org_uuid, folder_id=folder_id, owner_id=user_id)
+        contents = await document_service.get_folder_contents(
+            org_uuid, folder_id=folder_id, owner_id=user_id, user_id=user_id
+        )
         return {"folder": folder, **contents}
 
 

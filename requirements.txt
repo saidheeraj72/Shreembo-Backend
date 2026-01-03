@@ -20,7 +20,7 @@ boto3
 botocore
 
 # Pinecone Vector Database
-pinecone-client
+pinecone
 
 # OpenAI for Embeddings
 openai

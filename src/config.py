@@ -113,6 +113,25 @@ class Settings(BaseSettings):
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
     EMBEDDING_DIMENSIONS: int = 1536
 
+    # OpenAI Chat
+    OPENAI_CHAT_MODEL: str = "gpt-4o-mini"
+    OPENAI_CHAT_MAX_TOKENS: int = 4096
+    OPENAI_CHAT_TEMPERATURE: float = 0.7
+
+    # RAG Settings
+    RAG_TOP_K: int = 5
+    RAG_MIN_SCORE: float = 0.7
+    RAG_MAX_CONTEXT_LENGTH: int = 8000
+    RAG_SYSTEM_PROMPT: str = "You are a helpful AI assistant for an enterprise document management system."
+
+    # Serper Web Search
+    SERPER_API_KEY: Optional[str] = None
+    SERPER_SEARCH_ENDPOINT: str = "https://google.serper.dev/search"
+    SERPER_MAX_RESULTS: int = 5
+
+    # Chat Settings
+    CHAT_HISTORY_LIMIT: int = 20
+
     # Document Processing
     ENABLE_EMBEDDINGS: bool = True
     MAX_EMBEDDING_FILE_SIZE_MB: int = 50

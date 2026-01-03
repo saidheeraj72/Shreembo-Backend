@@ -63,10 +63,14 @@ class DocumentService:
         return result.data
 
     @staticmethod
-    async def get_folder_contents(org_id: Optional[UUID], 
+    async def get_folder_contents(org_id: Optional[UUID],
                                 folder_id: Optional[UUID] = None,
                                 branch_id: Optional[UUID] = None,
-                                owner_id: Optional[UUID] = None) -> dict:
+                                owner_id: Optional[UUID] = None,
+                                user_id: Optional[UUID] = None) -> dict:
+        """Get folder contents, filtered by user permissions if applicable."""
+        from src.services.permission_service import permission_service
+
         query = db.admin.table("storage_nodes").select("*").eq("status", "active")
 
         if org_id:
@@ -90,6 +94,32 @@ class DocumentService:
 
         folders = [r for r in result.data if r["node_type"] == "folder"]
         documents = [r for r in result.data if r["node_type"] == "file"]
+
+        # Apply folder access filtering for organization users
+        if org_id and user_id:
+            # Check if user is admin/owner (they see everything)
+            is_admin = await permission_service.is_admin_or_owner(user_id, org_id)
+
+            if not is_admin:
+                # Get accessible folder IDs for this user
+                accessible_ids = await permission_service.get_accessible_folder_ids(user_id, org_id)
+
+                # If user has no folder permissions, they see nothing
+                if not accessible_ids:
+                    return {"folders": [], "documents": []}
+
+                # Filter folders - only show folders user has access to
+                folders = [f for f in folders if f["id"] in accessible_ids]
+
+                # Filter documents - show docs in accessible folders or in current folder if accessible
+                if folder_id:
+                    # If viewing a specific folder, check if user has access
+                    if str(folder_id) not in accessible_ids:
+                        return {"folders": [], "documents": []}
+                    # User has access to this folder, show all its contents
+                else:
+                    # At root/branch level, only show documents in accessible folders
+                    documents = [d for d in documents if d.get("parent_id") in accessible_ids or d["id"] in accessible_ids]
 
         return {"folders": folders, "documents": documents}
 
