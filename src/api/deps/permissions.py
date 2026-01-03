@@ -48,7 +48,7 @@ def require_permission(module: str, action: str):
         if not has_permission:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Missing permission: {module}.{action}",
+                detail="You do not have the necessary permissions to perform this action.",
             )
 
         return True
