@@ -180,8 +180,12 @@ class EmbeddingService:
                     }
                 })
 
-            # Store in Pinecone
-            await pinecone_client.upsert(vectors, pinecone_namespace)
+            # Store in Pinecone with batching (Pinecone has 2MB limit per request)
+            # Batch size of 50 vectors to stay well under 2MB limit
+            batch_size = 50
+            for i in range(0, len(vectors), batch_size):
+                batch = vectors[i:i + batch_size]
+                await pinecone_client.upsert(batch, pinecone_namespace)
 
             # Update document status
             db.admin.table("storage_nodes").update({

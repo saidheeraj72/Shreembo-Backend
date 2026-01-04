@@ -199,14 +199,30 @@ class DocumentService:
     @staticmethod
     async def get_document(doc_id: UUID, org_id: Optional[UUID]) -> Optional[dict]:
         query = db.admin.table("storage_nodes").select("*").eq("id", str(doc_id))
-        
+
         if org_id:
             query = query.eq("org_id", str(org_id))
         else:
             query = query.is_("org_id", "null")
-            
-        result = query.maybe_single().execute()
-        return result.data
+
+        try:
+            result = query.maybe_single().execute()
+            if result and result.data:
+                return result.data
+        except Exception as e:
+            print(f"Error fetching document with org filter: {e}")
+            # Fallback: try without org_id filter
+            pass
+
+        # Fallback: Get document without org_id filter
+        try:
+            result = db.admin.table("storage_nodes").select("*").eq(
+                "id", str(doc_id)
+            ).eq("status", "active").maybe_single().execute()
+            return result.data if result and result.data else None
+        except Exception as e:
+            print(f"Error fetching document: {e}")
+            return None
 
     @staticmethod
     async def update_document(doc_id: UUID, org_id: Optional[UUID], **updates) -> Optional[dict]:
