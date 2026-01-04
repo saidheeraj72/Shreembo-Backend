@@ -7,6 +7,7 @@ from src.core.websocket import ws_manager
 from src.core.dependencies import get_current_user_id, get_current_org_context
 from src.services.document_service import document_service
 from src.services.embedding_service import embedding_service
+from src.services.permission_service import permission_service
 from src.models.document import (
     FolderCreate, FolderUpdate, DocumentUploadInit, DocumentUploadComplete,
     DocumentUpdate, DocumentMove, DocumentReplicate, DocumentResponse, FolderResponse,
@@ -14,6 +15,50 @@ from src.models.document import (
 )
 
 router = APIRouter()
+
+
+async def check_resource_access(
+    user_id: UUID, 
+    org_id: Optional[str], 
+    node_id: Optional[UUID], 
+    required_level: str = "edit"
+):
+    """Helper to check resource access for org users."""
+    if not org_id:
+        return # Personal users have full access
+        
+    has_access = await permission_service.check_folder_permission(
+        user_id=user_id,
+        folder_id=node_id,
+        org_id=UUID(org_id),
+        required_level=required_level
+    )
+    if not has_access:
+        raise HTTPException(
+            status_code=403, 
+            detail=f"You do not have {required_level} permission on this folder/document"
+        )
+
+async def check_general_permission(
+    user_id: UUID, 
+    org_id: Optional[str], 
+    action: str
+):
+    """Helper to check general document permissions."""
+    if not org_id:
+        return
+        
+    has_perm = await permission_service.check_permission(
+        user_id=user_id,
+        org_id=UUID(org_id),
+        module="documents",
+        action=action
+    )
+    if not has_perm:
+        raise HTTPException(
+            status_code=403,
+            detail=f"You do not have permission to {action} documents"
+        )
 
 
 # Folders
@@ -25,6 +70,13 @@ async def create_folder(
 ):
     """Create a new folder."""
     org_id = org_context.get("org_id")
+    
+    # Check permissions
+    await check_general_permission(user_id, org_id, "create")
+    
+    if data.parent_id:
+        await check_resource_access(user_id, org_id, data.parent_id, "edit")
+
     folder = await document_service.create_folder(
         org_id=UUID(org_id) if org_id else None,
         owner_id=user_id,
@@ -109,10 +161,16 @@ async def get_folder_contents(
 async def update_folder(
     folder_id: UUID,
     data: FolderUpdate,
-    org_context: dict = Depends(get_current_org_context)
+    org_context: dict = Depends(get_current_org_context),
+    user_id: UUID = Depends(get_current_user_id)
 ):
     """Update folder."""
     org_id = org_context.get("org_id")
+    
+    # Check permissions
+    await check_general_permission(user_id, org_id, "edit")
+    await check_resource_access(user_id, org_id, folder_id, "edit")
+
     updates = data.model_dump(exclude_none=True)
     return await document_service.update_document(folder_id, UUID(org_id) if org_id else None, **updates)
 
@@ -120,10 +178,16 @@ async def update_folder(
 @router.delete("/folders/{folder_id}")
 async def delete_folder(
     folder_id: UUID,
-    org_context: dict = Depends(get_current_org_context)
+    org_context: dict = Depends(get_current_org_context),
+    user_id: UUID = Depends(get_current_user_id)
 ):
     """Delete folder."""
     org_id = org_context.get("org_id")
+    
+    # Check permissions
+    await check_general_permission(user_id, org_id, "delete")
+    await check_resource_access(user_id, org_id, folder_id, "edit")
+
     await document_service.delete_document(folder_id, UUID(org_id) if org_id else None)
     return {"success": True}
 
@@ -137,6 +201,13 @@ async def init_upload(
 ):
     """Initialize document upload, returns presigned URL."""
     org_id = org_context.get("org_id")
+    
+    # Check permissions
+    await check_general_permission(user_id, org_id, "create")
+    
+    if data.parent_id:
+        await check_resource_access(user_id, org_id, data.parent_id, "edit")
+
     result = await document_service.init_upload(
         org_id=UUID(org_id) if org_id else None,
         owner_id=user_id,
@@ -164,6 +235,10 @@ async def complete_upload(
 ):
     """Complete document upload after S3 upload is done."""
     org_id = org_context.get("org_id")
+    
+    if parent_id:
+         await check_resource_access(user_id, org_id, parent_id, "edit")
+
     return await document_service.complete_upload(
         org_id=UUID(org_id) if org_id else None,
         owner_id=user_id,
@@ -188,6 +263,14 @@ async def upload_zip(
     org_context: dict = Depends(get_current_org_context)
 ):
     """Upload a ZIP file and extract its contents, creating folder structure."""
+    org_id = org_context.get("org_id")
+    
+    # Check permissions
+    await check_general_permission(user_id, org_id, "create")
+    
+    if parent_id:
+        await check_resource_access(user_id, org_id, UUID(parent_id), "edit")
+
     # Validate file type
     if not file.filename.lower().endswith('.zip'):
         raise HTTPException(status_code=400, detail="File must be a ZIP archive")
@@ -197,7 +280,6 @@ async def upload_zip(
     upload_id = str(uuid4())
 
     # Process the ZIP
-    org_id = org_context.get("org_id")
     result = await document_service.process_zip_upload(
         zip_bytes=zip_bytes,
         org_id=UUID(org_id) if org_id else None,
@@ -223,10 +305,16 @@ async def upload_zip(
 @router.get("/documents/{doc_id}", response_model=DocumentResponse)
 async def get_document(
     doc_id: UUID,
-    org_context: dict = Depends(get_current_org_context)
+    org_context: dict = Depends(get_current_org_context),
+    user_id: UUID = Depends(get_current_user_id)
 ):
     """Get document details."""
     org_id = org_context.get("org_id")
+    
+    # Check read access
+    await check_general_permission(user_id, org_id, "view")
+    await check_resource_access(user_id, org_id, doc_id, "view")
+    
     return await document_service.get_document(doc_id, UUID(org_id) if org_id else None)
 
 
@@ -234,10 +322,16 @@ async def get_document(
 async def update_document(
     doc_id: UUID,
     data: DocumentUpdate,
-    org_context: dict = Depends(get_current_org_context)
+    org_context: dict = Depends(get_current_org_context),
+    user_id: UUID = Depends(get_current_user_id)
 ):
     """Update document."""
     org_id = org_context.get("org_id")
+    
+    # Check permissions
+    await check_general_permission(user_id, org_id, "edit")
+    await check_resource_access(user_id, org_id, doc_id, "edit")
+
     updates = data.model_dump(exclude_none=True)
     return await document_service.update_document(doc_id, UUID(org_id) if org_id else None, **updates)
 
@@ -245,10 +339,16 @@ async def update_document(
 @router.delete("/documents/{doc_id}")
 async def delete_document(
     doc_id: UUID,
-    org_context: dict = Depends(get_current_org_context)
+    org_context: dict = Depends(get_current_org_context),
+    user_id: UUID = Depends(get_current_user_id)
 ):
     """Delete document."""
     org_id = org_context.get("org_id")
+    
+    # Check permissions
+    await check_general_permission(user_id, org_id, "delete")
+    await check_resource_access(user_id, org_id, doc_id, "edit")
+
     await document_service.delete_document(doc_id, UUID(org_id) if org_id else None)
     return {"success": True}
 
