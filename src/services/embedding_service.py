@@ -1,7 +1,12 @@
 """Embedding service for document processing."""
 import hashlib
-from typing import Optional, List
+import re
+import tempfile
+import os
+from typing import Optional, List, Dict, Any
 from uuid import UUID
+
+from markitdown import MarkItDown
 
 from src.core.s3 import s3_client
 from src.core.openai_client import openai_client
@@ -11,58 +16,113 @@ from src.core.database import db
 from src.config import settings
 
 
+class RecursiveHeaderChunker:
+    """
+    Splits markdown by headers (Level 1-3) to preserve logical structure.
+    If a section is too large, it sub-splits by paragraphs.
+    """
+    def __init__(self, max_chunk_size=800, overlap=100):
+        self.max_chunk_size = max_chunk_size
+        self.overlap = overlap
+
+    def split_text(self, text: str) -> List[Dict[str, Any]]:
+        # Regex to match headers like "# Title" or "### Section"
+        # We use a capture group to keep the delimiter for reconstruction
+        # This splits the text into [content, header, content, header...]
+        header_pattern = r'(^#{1,3}\s+.*)'
+        parts = re.split(header_pattern, text, flags=re.MULTILINE)
+
+        chunks = []
+        current_header = "General"
+
+        # 'parts' will look like: ['', '# Header 1', 'Content...', '## Header 2', 'Content...']
+        # We iterate and group them.
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+
+            # If it's a header, update current context
+            if re.match(r'^#{1,3}\s+', part):
+                current_header = part
+            else:
+                # It's content. If too big, sub-split.
+                if len(part) > self.max_chunk_size:
+                    sub_chunks = self._sub_split_paragraph(part)
+                    for sub in sub_chunks:
+                        chunks.append({
+                            "text": f"{current_header}\n\n{sub}", # Inject context
+                            "metadata": {"header": current_header}
+                        })
+                else:
+                    chunks.append({
+                        "text": f"{current_header}\n\n{part}",
+                        "metadata": {"header": current_header}
+                    })
+        return chunks
+
+    def _sub_split_paragraph(self, text: str) -> List[str]:
+        """Simple fallback: split by double newline (paragraphs)"""
+        paragraphs = text.split("\n\n")
+        # Combine paragraphs until max_chunk_size is reached (simple logic)
+        current_chunk = []
+        current_len = 0
+        final_chunks = []
+
+        for p in paragraphs:
+            if current_len + len(p) > self.max_chunk_size:
+                final_chunks.append("\n\n".join(current_chunk))
+                current_chunk = [p]
+                current_len = len(p)
+            else:
+                current_chunk.append(p)
+                current_len += len(p)
+
+        if current_chunk:
+            final_chunks.append("\n\n".join(current_chunk))
+        return final_chunks
+
+
 class EmbeddingService:
-    CHUNK_SIZE = 2000
-    CHUNK_OVERLAP = 200
+    """Service for document processing with MarkItDown parser and RecursiveHeaderChunker."""
+
+    # Initialize MarkItDown parser
+    md_parser = MarkItDown()
 
     @staticmethod
     async def extract_text(s3_key: str, file_type: str) -> Optional[str]:
-        """Extract text from document."""
+        """Extract text from document using MarkItDown parser."""
         content = await s3_client.get_file_content(s3_key)
         if not content:
             return None
 
         try:
-            if file_type in ["txt", "md"]:
-                return content.decode("utf-8", errors="ignore")
+            # Save content to temporary file for MarkItDown processing
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_type}') as tmp_file:
+                tmp_file.write(content)
+                tmp_path = tmp_file.name
 
-            elif file_type == "pdf":
-                from PyPDF2 import PdfReader
-                from io import BytesIO
-                reader = PdfReader(BytesIO(content))
-                return "\n".join(page.extract_text() or "" for page in reader.pages)
-
-            elif file_type == "docx":
-                from docx import Document
-                from io import BytesIO
-                doc = Document(BytesIO(content))
-                return "\n".join(p.text for p in doc.paragraphs)
-
-            elif file_type in ["xlsx", "xls"]:
-                from openpyxl import load_workbook
-                from io import BytesIO
-                wb = load_workbook(BytesIO(content), read_only=True)
-                texts = []
-                for sheet in wb.worksheets:
-                    for row in sheet.iter_rows(values_only=True):
-                        texts.append(" ".join(str(c) for c in row if c))
-                return "\n".join(texts)
+            try:
+                # Use MarkItDown to convert file to markdown
+                result = EmbeddingService.md_parser.convert(tmp_path)
+                return result.text_content
+            finally:
+                # Clean up temp file
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
 
         except Exception as e:
-            print(f"Text extraction error: {e}")
-
-        return None
+            print(f"Text extraction error with MarkItDown: {e}")
+            return None
 
     @staticmethod
     def chunk_text(text: str) -> List[str]:
-        """Split text into chunks."""
-        chunks = []
-        start = 0
-        while start < len(text):
-            end = start + EmbeddingService.CHUNK_SIZE
-            chunks.append(text[start:end])
-            start = end - EmbeddingService.CHUNK_OVERLAP
-        return chunks
+        """Split text into chunks using RecursiveHeaderChunker to preserve document structure."""
+        chunker = RecursiveHeaderChunker(max_chunk_size=1500, overlap=100)
+        chunks_with_metadata = chunker.split_text(text)
+
+        # Return just the text parts for backward compatibility
+        return [chunk['text'] for chunk in chunks_with_metadata]
 
     @staticmethod
     async def process_document(document_id: UUID, org_id: Optional[UUID], s3_key: str,
@@ -116,7 +176,7 @@ class EmbeddingService:
                         'document_id': str(document_id),
                         'org_id': pinecone_namespace, # Consistent identifier
                         'chunk_index': i,
-                        'chunk_text': chunk[:500],
+                        'chunk_text': chunk,  # Store full chunk text
                     }
                 })
 

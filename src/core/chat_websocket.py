@@ -224,15 +224,14 @@ class ChatConnectionManager:
             prompt_tokens = 0
             completion_tokens = 0
 
-            # Use the new tool-calling enabled method
-            async for chunk in rag_service.generate_response_with_tools(
+            # Generate response with RAG
+            async for chunk in rag_service.generate_response(
                 user_message=content,
                 session_id=session_id,
                 user_id=user_id,
                 org_id=org_id,
                 rag_enabled=rag_enabled,
-                web_search_enabled=web_search_enabled,
-                use_function_calling=True
+                web_search_enabled=web_search_enabled
             ):
                 # Check if generation was stopped
                 if not self.active_generations.get(generation_key, False):
@@ -244,15 +243,7 @@ class ChatConnectionManager:
                     })
                     break
 
-                if chunk["type"] == "tool_call":
-                    # Notify frontend that tools are being executed
-                    await websocket.send_json({
-                        "type": "tool_call",
-                        "session_id": str(session_id),
-                        "tools": chunk["tools"]
-                    })
-
-                elif chunk["type"] == "rag_context":
+                if chunk["type"] == "rag_context":
                     rag_results = chunk["data"]
                     await websocket.send_json({
                         "type": "rag_context",

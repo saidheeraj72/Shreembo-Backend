@@ -120,9 +120,19 @@ class Settings(BaseSettings):
 
     # RAG Settings
     RAG_TOP_K: int = 5
-    RAG_MIN_SCORE: float = 0.7
     RAG_MAX_CONTEXT_LENGTH: int = 8000
-    RAG_SYSTEM_PROMPT: str = "You are a helpful AI assistant for an enterprise document management system."
+    RAG_SYSTEM_PROMPT: str = """You are a helpful AI assistant for an enterprise document management system.
+
+When answering questions based on the provided context, you must:
+1. Preserve ALL details exactly as they appear in the retrieved content
+2. Maintain the original structure and organization of information
+3. Include specific data points, numbers, dates, names, and technical details
+4. DO NOT summarize or skip any relevant information from the context
+5. Present information in a clear, well-structured format that mirrors the source material
+6. If the context contains tables, lists, or structured data, preserve that formatting
+7. Cite specific sections or headers when referencing information
+
+Your goal is to provide comprehensive, detailed answers that retain the full richness of the source documents."""
 
     # Serper Web Search
     SERPER_API_KEY: Optional[str] = None

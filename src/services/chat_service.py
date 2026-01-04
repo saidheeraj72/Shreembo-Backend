@@ -31,7 +31,7 @@ class ChatService:
             "message_count": 0
         }
         result = db.admin.table("chat_sessions").insert(data).execute()
-        return result.data[0] if result.data else None
+        return result.data[0] if result and result.data else None
 
     @staticmethod
     async def get_session(
@@ -44,7 +44,7 @@ class ChatService:
             "id", str(session_id)
         ).maybe_single().execute()
 
-        if not result.data:
+        if not result or not result.data:
             return None
 
         session = result.data
@@ -79,7 +79,7 @@ class ChatService:
             offset, offset + limit - 1
         ).execute()
 
-        sessions = own_result.data if own_result.data else []
+        sessions = own_result.data if own_result and own_result.data else []
 
         # Include shared sessions from org
         if include_shared and org_id:
@@ -89,7 +89,7 @@ class ChatService:
                 "user_id", str(user_id)
             ).order("updated_at", desc=True).limit(20).execute()
 
-            if shared_query.data:
+            if shared_query and shared_query.data:
                 sessions.extend(shared_query.data)
 
         return sessions
@@ -105,7 +105,7 @@ class ChatService:
         result = db.admin.table("chat_sessions").update(updates).eq(
             "id", str(session_id)
         ).eq("user_id", str(user_id)).execute()
-        return result.data[0] if result.data else None
+        return result.data[0] if result and result.data else None
 
     @staticmethod
     async def delete_session(session_id: UUID, user_id: UUID) -> bool:
@@ -114,7 +114,7 @@ class ChatService:
             "status": "deleted",
             "updated_at": datetime.utcnow().isoformat()
         }).eq("id", str(session_id)).eq("user_id", str(user_id)).execute()
-        return bool(result.data)
+        return bool(result and result.data)
 
     @staticmethod
     async def share_session(
@@ -180,7 +180,7 @@ class ChatService:
             "message_count"
         ).eq("id", str(session_id)).single().execute()
 
-        current_count = session_result.data.get("message_count", 0) if session_result.data else 0
+        current_count = session_result.data.get("message_count", 0) if session_result and session_result.data else 0
 
         db.admin.table("chat_sessions").update({
             "message_count": current_count + 1,
@@ -188,7 +188,7 @@ class ChatService:
             "updated_at": datetime.utcnow().isoformat()
         }).eq("id", str(session_id)).execute()
 
-        return result.data[0] if result.data else None
+        return result.data[0] if result and result.data else None
 
     @staticmethod
     async def get_session_messages(
@@ -206,12 +206,12 @@ class ChatService:
             before_msg = db.admin.table("chat_messages").select("created_at").eq(
                 "id", str(before_id)
             ).single().execute()
-            if before_msg.data:
+            if before_msg and before_msg.data:
                 query = query.lt("created_at", before_msg.data["created_at"])
 
         result = query.order("created_at", desc=True).limit(limit).execute()
         # Return in chronological order
-        return list(reversed(result.data)) if result.data else []
+        return list(reversed(result.data)) if result and result.data else []
 
     @staticmethod
     async def get_chat_history(
@@ -239,7 +239,7 @@ class ChatService:
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens
         }).eq("id", str(message_id)).execute()
-        return result.data[0] if result.data else None
+        return result.data[0] if result and result.data else None
 
     @staticmethod
     async def generate_session_title(content: str) -> str:

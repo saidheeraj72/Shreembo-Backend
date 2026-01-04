@@ -26,10 +26,7 @@ pinecone
 openai
 
 # Document Processing
-pypdf2
-python-docx
-openpyxl
-python-pptx
+markitdown  # Universal document parser (handles PDF, DOCX, XLSX, PPTX, etc.)
 
 # WebSocket
 websockets

@@ -93,10 +93,12 @@ class RAGService:
         query_embedding = await openai_client.get_embedding(query)
 
         if not query_embedding:
+            print(f"RAG: Failed to get embedding for query: {query}")
             return []
 
         # Determine namespace
         namespace = str(org_id) if org_id else str(user_id)
+        print(f"RAG: Searching in namespace: {namespace}, top_k: {top_k}")
 
         # Query Pinecone
         results = await pinecone_client.query(
@@ -107,19 +109,20 @@ class RAGService:
         )
 
         if not results:
+            print(f"RAG: No results from Pinecone")
             return []
 
-        # Extract document IDs
-        doc_ids = list(set(
-            r.metadata.get('document_id')
-            for r in results
-            if r.metadata and r.metadata.get('document_id')
-        ))
+        print(f"RAG: Got {len(results)} results from Pinecone")
+
+        # Extract all document IDs from results
+        doc_ids = [r.metadata.get('document_id') for r in results if r.metadata and r.metadata.get('document_id')]
+        unique_doc_ids = list(set(doc_ids))
 
         # Filter by permissions
         accessible_doc_ids = await RAGService.get_accessible_documents_for_rag(
-            user_id, org_id, doc_ids
+            user_id, org_id, unique_doc_ids
         )
+        print(f"RAG: {len(accessible_doc_ids)} documents accessible after permission check")
 
         if not accessible_doc_ids:
             return []
@@ -129,22 +132,17 @@ class RAGService:
             "id, name"
         ).in_("id", accessible_doc_ids).eq("status", "active").execute()
 
-        doc_map = {d['id']: d['name'] for d in docs_result.data}
+        doc_map = {d['id']: d['name'] for d in docs_result.data if docs_result and docs_result.data}
+        print(f"RAG: Found {len(doc_map)} active documents in database")
 
-        # Build filtered results
+        # Build results - just take top K chunks directly
         filtered_results = []
-        seen_docs = set()
 
         for r in results:
             doc_id = r.metadata.get('document_id')
+
+            # Only check if document is accessible
             if doc_id not in accessible_doc_ids:
-                continue
-
-            if r.score < settings.RAG_MIN_SCORE:
-                continue
-
-            # Avoid duplicate documents (keep highest score)
-            if doc_id in seen_docs:
                 continue
 
             filtered_results.append({
@@ -154,10 +152,14 @@ class RAGService:
                 'chunk_index': r.metadata.get('chunk_index', 0),
                 'score': r.score
             })
-            seen_docs.add(doc_id)
 
+            # Stop when we have top_k chunks
             if len(filtered_results) >= top_k:
                 break
+
+        print(f"RAG: Returning {len(filtered_results)} chunks")
+        if filtered_results:
+            print(f"RAG: Score range: {filtered_results[0]['score']:.3f} to {filtered_results[-1]['score']:.3f}")
 
         return filtered_results
 
@@ -201,45 +203,6 @@ class RAGService:
 
         return "".join(context_parts)
 
-    @staticmethod
-    async def should_use_rag(user_message: str, history: List[Dict[str, str]]) -> bool:
-        """
-        Determine if RAG retrieval is necessary for the given message.
-        Uses a lightweight LLM call to classify the intent.
-        """
-        # Simple heuristics for speed (optional optimization)
-        lowered = user_message.lower().strip()
-        if len(lowered.split()) < 4 and any(w in lowered for w in ["hi", "hello", "hey", "thanks", "thank you", "bye", "goodbye"]):
-            return False
-
-        # Construct classification prompt
-        messages = [
-            {"role": "system", "content": (
-                "You are an intent classifier. Your job is to determine if a user's query requires "
-                "searching an external knowledge base (documents, files, project data) to answer correctly. "
-                "Respond with 'YES' if the query is about specific documents, projects, facts, or technical details. "
-                "Respond with 'NO' if the query is conversational (greetings, small talk), a general knowledge question, "
-                "or a follow-up that relies solely on the conversation history provided. "
-                "Output ONLY 'YES' or 'NO'."
-            )}
-        ]
-        # Add limited history for context
-        messages.extend(history[-3:]) 
-        messages.append({"role": "user", "content": user_message})
-
-        try:
-            client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-            response = await client.chat.completions.create(
-                model=settings.OPENAI_CHAT_MODEL, 
-                messages=messages,
-                max_tokens=10,
-                temperature=0.0
-            )
-            decision = response.choices[0].message.content.strip().upper()
-            return "YES" in decision
-        except Exception as e:
-            print(f"RAG routing error: {e}")
-            return True # Fallback to searching if unsure
 
     @staticmethod
     async def generate_response(
@@ -271,17 +234,14 @@ class RAGService:
         )
 
         try:
-            # 1. RAG Search (Conditional)
-            should_search = False
+            # 1. RAG Search - Get top 5 chunks
             if rag_enabled:
-                should_search = await RAGService.should_use_rag(user_message, history)
-            
-            if rag_enabled and should_search:
                 rag_results = await RAGService.search_documents(
                     query=user_message,
                     user_id=user_id,
                     org_id=org_id,
-                    session_id=session_id
+                    session_id=session_id,
+                    top_k=5  # Get top 5 chunks
                 )
                 if rag_results:
                     yield {
@@ -430,171 +390,6 @@ class RAGService:
             "completion_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens
         }
-
-
-    @staticmethod
-    async def generate_response_with_tools(
-        user_message: str,
-        session_id: UUID,
-        user_id: UUID,
-        org_id: Optional[UUID],
-        rag_enabled: bool = True,
-        web_search_enabled: bool = False,
-        use_function_calling: bool = True
-    ) -> AsyncGenerator[Dict[str, Any], None]:
-        """
-        Generate streaming response with intelligent tool calling.
-
-        This enhanced version uses OpenAI function calling to determine which tools to use,
-        providing more intelligent decisions about when to search documents or the web.
-
-        Yields dictionaries with:
-        - type: 'tool_call' | 'rag_context' | 'web_search' | 'chunk' | 'done' | 'error'
-        - content/data based on type
-        """
-        # Import here to avoid circular dependency
-        from src.services.tools_service import tools_service
-
-        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
-
-        rag_results = []
-        web_results = []
-        total_prompt_tokens = 0
-        total_completion_tokens = 0
-
-        # Get chat history
-        history = await chat_service.get_chat_history(
-            session_id,
-            limit=settings.CHAT_HISTORY_LIMIT
-        )
-
-        try:
-            # 1. Determine which tools to use (if function calling is enabled)
-            tools_to_use = []
-            if use_function_calling and (rag_enabled or web_search_enabled):
-                tools_to_use = await tools_service.determine_tools_to_use(
-                    user_message, history, rag_enabled, web_search_enabled
-                )
-
-                # Notify frontend that tools are being called
-                if tools_to_use:
-                    yield {
-                        "type": "tool_call",
-                        "tools": [t["name"] for t in tools_to_use]
-                    }
-
-            # 2. Execute tools
-            for tool in tools_to_use:
-                tool_name = tool["name"]
-                try:
-                    tool_args = json.loads(tool["arguments"]) if isinstance(tool["arguments"], str) else tool["arguments"]
-                except json.JSONDecodeError:
-                    tool_args = {"query": user_message}
-
-                result = await tools_service.execute_tool(
-                    tool_name=tool_name,
-                    tool_arguments=tool_args,
-                    user_id=user_id,
-                    org_id=org_id,
-                    session_id=session_id
-                )
-
-                if tool_name == "search_documents" and not result.get("error"):
-                    rag_results = result.get("results", [])
-                    if rag_results:
-                        yield {
-                            "type": "rag_context",
-                            "data": rag_results
-                        }
-                elif tool_name == "search_web" and not result.get("error"):
-                    web_results = result.get("results", [])
-                    if web_results:
-                        yield {
-                            "type": "web_search",
-                            "data": web_results
-                        }
-
-            # 3. Build context
-            context = RAGService.build_context(rag_results, web_results)
-
-            # 4. Build messages
-            messages = [
-                {"role": "system", "content": settings.RAG_SYSTEM_PROMPT}
-            ]
-
-            if context:
-                messages.append({
-                    "role": "system",
-                    "content": f"Here is relevant context to help answer the user's question:\n\n{context}"
-                })
-
-            messages.extend(history)
-            messages.append({"role": "user", "content": user_message})
-
-            # 5. Stream response
-            stream = await client.chat.completions.create(
-                model=settings.OPENAI_CHAT_MODEL,
-                messages=messages,
-                max_tokens=settings.OPENAI_CHAT_MAX_TOKENS,
-                temperature=settings.OPENAI_CHAT_TEMPERATURE,
-                stream=True,
-                stream_options={"include_usage": True}
-            )
-
-            full_response = []
-            async for chunk in stream:
-                # Check for usage in the final chunk
-                if hasattr(chunk, 'usage') and chunk.usage:
-                    total_prompt_tokens = chunk.usage.prompt_tokens
-                    total_completion_tokens = chunk.usage.completion_tokens
-
-                if chunk.choices and chunk.choices[0].delta.content:
-                    content = chunk.choices[0].delta.content
-                    full_response.append(content)
-                    yield {
-                        "type": "chunk",
-                        "content": content
-                    }
-
-            # Build sources for response
-            sources = [
-                {
-                    "document_id": r["document_id"],
-                    "document_name": r["document_name"],
-                    "chunk_index": r["chunk_index"],
-                    "chunk_text": r["chunk_text"][:200],  # Truncate for response
-                    "score": r["score"]
-                }
-                for r in rag_results
-            ]
-
-            # Track token usage
-            await token_usage_service.track_usage(
-                user_id=user_id,
-                org_id=org_id,
-                prompt_tokens=total_prompt_tokens,
-                completion_tokens=total_completion_tokens,
-                is_rag=bool(rag_results),
-                is_web_search=bool(web_results)
-            )
-
-            # 6. Final result
-            yield {
-                "type": "done",
-                "content": "".join(full_response),
-                "rag_results": rag_results,
-                "web_results": web_results,
-                "sources": sources,
-                "prompt_tokens": total_prompt_tokens,
-                "completion_tokens": total_completion_tokens,
-                "total_tokens": total_prompt_tokens + total_completion_tokens
-            }
-
-        except Exception as e:
-            yield {
-                "type": "error",
-                "error": str(e)
-            }
 
 
 rag_service = RAGService()
