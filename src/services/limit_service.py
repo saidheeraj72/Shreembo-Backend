@@ -181,11 +181,16 @@ class LimitService:
 
         # Get today's usage
         today = date.today()
-        result = db.admin.table("usage_daily_summary").select("*").eq(
+        query = db.admin.table("usage_daily_summary").select("*").eq(
             "user_id", str(user_id)
-        ).eq("org_id", str(org_id) if org_id else None).eq(
-            "usage_date", today.isoformat()
-        ).execute()
+        )
+        
+        if org_id:
+            query = query.eq("org_id", str(org_id))
+        else:
+            query = query.is_("org_id", "null")
+            
+        result = query.eq("usage_date", today.isoformat()).execute()
 
         current_usage = 0
         if result.data:
@@ -238,11 +243,16 @@ class LimitService:
         today = date.today()
         period_start = date(today.year, today.month, 1)
 
-        result = db.admin.table("token_usage").select("total_tokens").eq(
+        query = db.admin.table("token_usage").select("total_tokens").eq(
             "user_id", str(user_id)
-        ).eq("org_id", str(org_id) if org_id else None).eq(
-            "period_start", period_start.isoformat()
-        ).execute()
+        )
+
+        if org_id:
+            query = query.eq("org_id", str(org_id))
+        else:
+            query = query.is_("org_id", "null")
+
+        result = query.eq("period_start", period_start.isoformat()).execute()
 
         current_usage = 0
         if result.data:
