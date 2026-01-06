@@ -77,12 +77,22 @@ class WebSearchResult(BaseModel):
     snippet: str
 
 
+class MessageAttachment(BaseModel):
+    """Document attachment in a message."""
+    session_document_id: UUID
+    filename: str
+    file_type: Optional[str] = None
+    file_size: int
+    document_id: Optional[UUID] = None  # Deprecated: kept for backward compatibility
+
+
 class ChatMessageResponse(BaseModel):
     """Chat message response."""
     id: UUID
     session_id: UUID
     role: MessageRole
     content: str
+    attachments: Optional[List[MessageAttachment]] = None
     sources: Optional[List[RAGSource]] = None
     web_search_results: Optional[List[WebSearchResult]] = None
     prompt_tokens: Optional[int] = None
@@ -139,8 +149,8 @@ class SessionDocumentUploadResponse(BaseModel):
     upload_id: str
     upload_url: str
     s3_key: str
-    document_id: UUID
     session_document_id: UUID
+    document_id: Optional[UUID] = None  # Deprecated: kept for backward compatibility
 
 
 # ============== Token Usage Models ==============

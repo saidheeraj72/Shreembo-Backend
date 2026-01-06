@@ -7,6 +7,7 @@ class PineconeClient:
     def __init__(self):
         self._client = None
         self._index = None
+        self._chat_sessions_index = None
 
     @property
     def client(self):
@@ -17,22 +18,38 @@ class PineconeClient:
 
     @property
     def index(self):
+        """Main index for organization documents."""
         if self._index is None:
             self._index = self.client.Index(settings.PINECONE_INDEX_NAME)
         return self._index
 
-    async def upsert(self, vectors: List[Dict], namespace: str) -> bool:
+    @property
+    def chat_sessions_index(self):
+        """Separate index for chat session documents."""
+        if self._chat_sessions_index is None:
+            self._chat_sessions_index = self.client.Index(settings.PINECONE_CHAT_SESSIONS_INDEX)
+        return self._chat_sessions_index
+
+    def get_index(self, index_name: Optional[str] = None):
+        """Get index by name. Defaults to main index."""
+        if index_name == settings.PINECONE_CHAT_SESSIONS_INDEX:
+            return self.chat_sessions_index
+        return self.index
+
+    async def upsert(self, vectors: List[Dict], namespace: str, index_name: Optional[str] = None) -> bool:
         try:
-            self.index.upsert(vectors=vectors, namespace=namespace)
+            idx = self.get_index(index_name)
+            idx.upsert(vectors=vectors, namespace=namespace)
             return True
         except Exception as e:
             print(f"Pinecone upsert error: {e}")
             return False
 
     async def query(self, vector: List[float], namespace: str, top_k: int = 10,
-                    filter: Optional[Dict] = None) -> List[Dict]:
+                    filter: Optional[Dict] = None, index_name: Optional[str] = None) -> List[Dict]:
         try:
-            results = self.index.query(
+            idx = self.get_index(index_name)
+            results = idx.query(
                 vector=vector, namespace=namespace, top_k=top_k,
                 filter=filter, include_metadata=True
             )
@@ -41,9 +58,10 @@ class PineconeClient:
             print(f"Pinecone query error: {e}")
             return []
 
-    async def delete_by_document(self, document_id: str, namespace: str) -> bool:
+    async def delete_by_document(self, document_id: str, namespace: str, index_name: Optional[str] = None) -> bool:
         try:
-            self.index.delete(filter={'document_id': document_id}, namespace=namespace)
+            idx = self.get_index(index_name)
+            idx.delete(filter={'document_id': document_id}, namespace=namespace)
             return True
         except Exception:
             return False

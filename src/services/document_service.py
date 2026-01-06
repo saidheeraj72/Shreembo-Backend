@@ -1,4 +1,5 @@
 """Document service for CRUD operations."""
+import asyncio
 import zipfile
 import mimetypes
 from typing import Optional, List, Dict, Any
@@ -184,14 +185,16 @@ class DocumentService:
                 str(owner_id), upload_id, "processing", 30, document["id"]
             )
 
-            # Queue embedding generation (async)
-            await embedding_service.process_document(
-                document_id=UUID(document["id"]),
-                org_id=org_id, # Can be None
-                s3_key=s3_key,
-                file_type=ext,
-                user_id=str(owner_id),
-                upload_id=upload_id
+            # Start background processing (non-blocking)
+            asyncio.create_task(
+                embedding_service.process_document(
+                    document_id=UUID(document["id"]),
+                    org_id=org_id, # Can be None
+                    s3_key=s3_key,
+                    file_type=ext,
+                    user_id=str(owner_id),
+                    upload_id=upload_id
+                )
             )
 
         return document
@@ -455,14 +458,16 @@ class DocumentService:
                                         user_id, upload_id, "processing", progress, document["id"]
                                     )
 
-                                # Queue embedding generation
-                                await embedding_service.process_document(
-                                    document_id=UUID(document["id"]),
-                                    org_id=org_id,
-                                    s3_key=s3_key,
-                                    file_type=ext,
-                                    user_id=user_id,
-                                    upload_id=upload_id
+                                # Start background embedding generation
+                                asyncio.create_task(
+                                    embedding_service.process_document(
+                                        document_id=UUID(document["id"]),
+                                        org_id=org_id,
+                                        s3_key=s3_key,
+                                        file_type=ext,
+                                        user_id=user_id,
+                                        upload_id=upload_id
+                                    )
                                 )
 
                         except Exception as e:

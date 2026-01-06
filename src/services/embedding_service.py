@@ -126,32 +126,37 @@ class EmbeddingService:
 
     @staticmethod
     async def process_document(document_id: UUID, org_id: Optional[UUID], s3_key: str,
-                               file_type: str, user_id: str, upload_id: str):
+                               file_type: str, user_id: str, upload_id: str,
+                               is_session_document: bool = False,
+                               session_id: Optional[str] = None):
         """Process document: extract text and generate embeddings."""
         try:
-            # Update status
-            db.admin.table("storage_nodes").update({
-                "processing_status": "processing"
-            }).eq("id", str(document_id)).execute()
+            # Update status (only for storage_nodes, not session documents)
+            if not is_session_document:
+                db.admin.table("storage_nodes").update({
+                    "processing_status": "processing"
+                }).eq("id", str(document_id)).execute()
 
             await ws_manager.send_upload_progress(user_id, upload_id, "extracting", 40)
 
             # Check if embeddings are enabled and file type is supported
             if not settings.ENABLE_EMBEDDINGS or file_type not in settings.SUPPORTED_EMBEDDING_TYPES:
-                db.admin.table("storage_nodes").update({
-                    "processing_status": "completed",
-                    "embedding_status": "skipped"
-                }).eq("id", str(document_id)).execute()
+                if not is_session_document:
+                    db.admin.table("storage_nodes").update({
+                        "processing_status": "completed",
+                        "embedding_status": "skipped"
+                    }).eq("id", str(document_id)).execute()
                 await ws_manager.send_upload_progress(user_id, upload_id, "complete", 100, str(document_id))
                 return
 
             # Extract text
             text = await EmbeddingService.extract_text(s3_key, file_type)
             if not text:
-                db.admin.table("storage_nodes").update({
-                    "processing_status": "completed",
-                    "embedding_status": "failed"
-                }).eq("id", str(document_id)).execute()
+                if not is_session_document:
+                    db.admin.table("storage_nodes").update({
+                        "processing_status": "completed",
+                        "embedding_status": "failed"
+                    }).eq("id", str(document_id)).execute()
                 await ws_manager.send_upload_progress(user_id, upload_id, "complete", 100, str(document_id))
                 return
 
@@ -165,19 +170,33 @@ class EmbeddingService:
 
             await ws_manager.send_upload_progress(user_id, upload_id, "storing_embeddings", 80)
 
-            pinecone_namespace = str(org_id) if org_id else user_id # Consistent namespace
-            # Prepare vectors for Pinecone
+            # Determine index and namespace based on document type
+            if is_session_document:
+                # Session documents: use chat-sessions index with user_id as namespace
+                index_name = settings.PINECONE_CHAT_SESSIONS_INDEX
+                pinecone_namespace = user_id
+            else:
+                # Regular documents: use main index with org_id or user_id as namespace
+                index_name = None  # Default main index
+                pinecone_namespace = str(org_id) if org_id else user_id
+
+            # Prepare vectors for Pinecone - include session_id for session documents
             vectors = []
             for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+                metadata = {
+                    'document_id': str(document_id),
+                    'user_id': user_id,
+                    'chunk_index': i,
+                    'chunk_text': chunk,
+                }
+                # Add session_id for session documents (enables session-specific retrieval)
+                if is_session_document and session_id:
+                    metadata['session_id'] = session_id
+
                 vectors.append({
                     'id': f"{document_id}_{i}",
                     'values': embedding,
-                    'metadata': {
-                        'document_id': str(document_id),
-                        'org_id': pinecone_namespace, # Consistent identifier
-                        'chunk_index': i,
-                        'chunk_text': chunk,  # Store full chunk text
-                    }
+                    'metadata': metadata
                 })
 
             # Store in Pinecone with batching (Pinecone has 2MB limit per request)
@@ -185,22 +204,24 @@ class EmbeddingService:
             batch_size = 50
             for i in range(0, len(vectors), batch_size):
                 batch = vectors[i:i + batch_size]
-                await pinecone_client.upsert(batch, pinecone_namespace)
+                await pinecone_client.upsert(batch, pinecone_namespace, index_name)
 
-            # Update document status
-            db.admin.table("storage_nodes").update({
-                "processing_status": "completed",
-                "embedding_status": "completed"
-            }).eq("id", str(document_id)).execute()
+            # Update document status (only for storage_nodes, not session documents)
+            if not is_session_document:
+                db.admin.table("storage_nodes").update({
+                    "processing_status": "completed",
+                    "embedding_status": "completed"
+                }).eq("id", str(document_id)).execute()
 
             await ws_manager.send_upload_progress(user_id, upload_id, "complete", 100, str(document_id))
 
         except Exception as e:
             print(f"Embedding error: {e}")
-            db.admin.table("storage_nodes").update({
-                "processing_status": "failed",
-                "embedding_status": "failed"
-            }).eq("id", str(document_id)).execute()
+            if not is_session_document:
+                db.admin.table("storage_nodes").update({
+                    "processing_status": "failed",
+                    "embedding_status": "failed"
+                }).eq("id", str(document_id)).execute()
             await ws_manager.send_upload_progress(user_id, upload_id, "failed", 0, error=str(e))
 
     @staticmethod

@@ -107,6 +107,7 @@ class Settings(BaseSettings):
     # Pinecone
     PINECONE_API_KEY: Optional[str] = None
     PINECONE_INDEX_NAME: str = "document-embeddings"
+    PINECONE_CHAT_SESSIONS_INDEX: str = "chat-sessions"
 
     # OpenAI
     OPENAI_API_KEY: Optional[str] = None

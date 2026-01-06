@@ -109,7 +109,14 @@ class ChatService:
 
     @staticmethod
     async def delete_session(session_id: UUID, user_id: UUID) -> bool:
-        """Soft delete a chat session."""
+        """Soft delete a chat session and clean up session documents."""
+        # Import here to avoid circular dependency
+        from src.services.session_document_service import session_document_service
+
+        # Clean up all session documents and their embeddings
+        await session_document_service.delete_all_session_documents(session_id, user_id)
+
+        # Soft delete the session
         result = db.admin.table("chat_sessions").update({
             "status": "deleted",
             "updated_at": datetime.utcnow().isoformat()
@@ -151,6 +158,7 @@ class ChatService:
         role: str,
         content: str,
         message_id: Optional[UUID] = None,
+        attachments: Optional[List[dict]] = None,
         rag_context: Optional[List[dict]] = None,
         web_search_results: Optional[List[dict]] = None,
         sources: Optional[List[dict]] = None,
@@ -163,6 +171,7 @@ class ChatService:
             "session_id": str(session_id),
             "role": role,
             "content": content,
+            "attachments": attachments,
             "rag_context": rag_context,
             "web_search_results": web_search_results,
             "sources": sources,

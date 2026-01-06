@@ -96,72 +96,119 @@ class RAGService:
             print(f"RAG: Failed to get embedding for query: {query}")
             return []
 
-        # Determine namespace
-        namespace = str(org_id) if org_id else str(user_id)
-        print(f"RAG: Searching in namespace: {namespace}, top_k: {top_k}")
+        # Separate results from main index and chat-sessions index
+        main_results = []
+        session_results = []
 
-        # Query Pinecone
+        # Query main index (organization or personal documents)
+        namespace = str(org_id) if org_id else str(user_id)
+        print(f"RAG: Searching main index in namespace: {namespace}, top_k: {top_k}")
+
         results = await pinecone_client.query(
             vector=query_embedding,
             namespace=namespace,
             top_k=top_k * 2,  # Get extra for filtering
             filter=None
         )
+        if results:
+            main_results = results
+            print(f"RAG: Got {len(results)} results from main index")
 
-        if not results:
+        # Also query chat-sessions index if we have a session
+        if session_id:
+            print(f"RAG: Searching chat-sessions index for session: {session_id}")
+            session_index_results = await pinecone_client.query(
+                vector=query_embedding,
+                namespace=str(user_id),  # Session docs are namespaced by user_id
+                top_k=top_k * 2,
+                filter={'session_id': str(session_id)},  # Filter by session for isolation
+                index_name=settings.PINECONE_CHAT_SESSIONS_INDEX
+            )
+            if session_index_results:
+                session_results = session_index_results
+                print(f"RAG: Got {len(session_index_results)} results from chat-sessions index")
+
+        if not main_results and not session_results:
             print(f"RAG: No results from Pinecone")
             return []
 
-        print(f"RAG: Got {len(results)} results from Pinecone")
+        # Process main index results with permission checks
+        main_filtered_results = []
+        if main_results:
+            # Extract document IDs from main results
+            doc_ids = [r.metadata.get('document_id') for r in main_results if r.metadata and r.metadata.get('document_id')]
+            unique_doc_ids = list(set(doc_ids))
 
-        # Extract all document IDs from results
-        doc_ids = [r.metadata.get('document_id') for r in results if r.metadata and r.metadata.get('document_id')]
-        unique_doc_ids = list(set(doc_ids))
+            # Filter by permissions
+            accessible_doc_ids = await RAGService.get_accessible_documents_for_rag(
+                user_id, org_id, unique_doc_ids
+            )
+            print(f"RAG: {len(accessible_doc_ids)} main index documents accessible after permission check")
 
-        # Filter by permissions
-        accessible_doc_ids = await RAGService.get_accessible_documents_for_rag(
-            user_id, org_id, unique_doc_ids
-        )
-        print(f"RAG: {len(accessible_doc_ids)} documents accessible after permission check")
+            if accessible_doc_ids:
+                # Get document details from storage_nodes
+                docs_result = db.admin.table("storage_nodes").select(
+                    "id, name"
+                ).in_("id", accessible_doc_ids).eq("status", "active").execute()
 
-        if not accessible_doc_ids:
-            return []
+                doc_map = {d['id']: d['name'] for d in docs_result.data if docs_result and docs_result.data}
+                print(f"RAG: Found {len(doc_map)} active main index documents in database")
 
-        # Get document details
-        docs_result = db.admin.table("storage_nodes").select(
-            "id, name"
-        ).in_("id", accessible_doc_ids).eq("status", "active").execute()
+                # Build results from main index
+                for r in main_results:
+                    doc_id = r.metadata.get('document_id')
+                    if doc_id in accessible_doc_ids and doc_id in doc_map:
+                        main_filtered_results.append({
+                            'document_id': doc_id,
+                            'document_name': doc_map.get(doc_id, 'Unknown'),
+                            'chunk_text': r.metadata.get('chunk_text', ''),
+                            'chunk_index': r.metadata.get('chunk_index', 0),
+                            'score': r.score
+                        })
 
-        doc_map = {d['id']: d['name'] for d in docs_result.data if docs_result and docs_result.data}
-        print(f"RAG: Found {len(doc_map)} active documents in database")
+        # Process session index results - no permission check needed (session isolation is enough)
+        session_filtered_results = []
+        if session_results:
+            # Get unique session document IDs from session results
+            session_doc_ids = list(set([r.metadata.get('document_id') for r in session_results if r.metadata and r.metadata.get('document_id')]))
 
-        # Build results - just take top K chunks directly
-        filtered_results = []
+            # Get document names from session_documents table (only completed embeddings)
+            session_docs_result = db.admin.table("session_documents").select(
+                "id, filename"
+            ).in_("id", session_doc_ids).eq(
+                "session_id", str(session_id)
+            ).eq(
+                "embedding_status", "completed"  # Only use documents with completed embeddings
+            ).execute()
 
-        for r in results:
-            doc_id = r.metadata.get('document_id')
+            session_doc_map = {d['id']: d['filename'] for d in session_docs_result.data if session_docs_result and session_docs_result.data}
+            print(f"RAG: Found {len(session_doc_map)} completed session documents (out of {len(session_doc_ids)} total)")
 
-            # Only check if document is accessible
-            if doc_id not in accessible_doc_ids:
-                continue
+            # Build results from session index
+            for r in session_results:
+                session_doc_id = r.metadata.get('document_id')
+                if session_doc_id in session_doc_map:
+                    session_filtered_results.append({
+                        'document_id': session_doc_id,  # This is actually session_document_id
+                        'document_name': session_doc_map.get(session_doc_id, 'Unknown'),
+                        'chunk_text': r.metadata.get('chunk_text', ''),
+                        'chunk_index': r.metadata.get('chunk_index', 0),
+                        'score': r.score,
+                        'source': 'session'  # Mark as session document
+                    })
 
-            filtered_results.append({
-                'document_id': doc_id,
-                'document_name': doc_map.get(doc_id, 'Unknown'),
-                'chunk_text': r.metadata.get('chunk_text', ''),
-                'chunk_index': r.metadata.get('chunk_index', 0),
-                'score': r.score
-            })
+        # Combine and sort by score
+        all_filtered_results = main_filtered_results + session_filtered_results
+        all_filtered_results.sort(key=lambda x: x['score'], reverse=True)
 
-            # Stop when we have top_k chunks
-            if len(filtered_results) >= top_k:
-                break
+        # Take top K
+        final_results = all_filtered_results[:top_k]
 
-        print(f"RAG: Returning {len(filtered_results)} chunks")
-        if filtered_results:
-            print(f"RAG: Score range: {filtered_results[0]['score']:.3f} to {filtered_results[-1]['score']:.3f}")
+        print(f"RAG: Returning {len(final_results)} chunks ({len([r for r in final_results if r.get('source') == 'session'])} from session, {len([r for r in final_results if not r.get('source')])} from main index)")
+        if final_results:
+            print(f"RAG: Score range: {final_results[0]['score']:.3f} to {final_results[-1]['score']:.3f}")
 
-        return filtered_results
+        return final_results
 
     @staticmethod
     def build_context(
