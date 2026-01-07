@@ -117,16 +117,34 @@ class RAGService:
         # Also query chat-sessions index if we have a session
         if session_id:
             print(f"RAG: Searching chat-sessions index for session: {session_id}")
+            
+            # Determine namespace for session documents
+            # Default to current user (uploader)
+            session_namespace = str(user_id)
+            
+            try:
+                # Fetch session to get the owner (documents are stored in owner's namespace)
+                # Use db.admin to bypass RLS since we've already validated access in the API layer
+                session_result = db.admin.table("chat_sessions").select("user_id").eq(
+                    "id", str(session_id)
+                ).single().execute()
+                
+                if session_result and session_result.data:
+                    # Use Session Owner's ID as namespace
+                    session_namespace = str(session_result.data["user_id"])
+            except Exception as e:
+                print(f"RAG: Error fetching session owner: {e}")
+
             session_index_results = await pinecone_client.query(
                 vector=query_embedding,
-                namespace=str(user_id),  # Session docs are namespaced by user_id
+                namespace=session_namespace,
                 top_k=top_k * 2,
                 filter={'session_id': str(session_id)},  # Filter by session for isolation
                 index_name=settings.PINECONE_CHAT_SESSIONS_INDEX
             )
             if session_index_results:
                 session_results = session_index_results
-                print(f"RAG: Got {len(session_index_results)} results from chat-sessions index")
+                print(f"RAG: Got {len(session_index_results)} results from chat-sessions index (namespace: {session_namespace})")
 
         if not main_results and not session_results:
             print(f"RAG: No results from Pinecone")

@@ -341,6 +341,17 @@ class LimitService:
             entity_id=entity_id
         )
 
+        # Helper to build base query
+        def build_query(table, select_cols):
+            q = db.admin.table(table).select(select_cols)
+            if entity_type == "user":
+                # Personal usage: user_id = entity_id AND org_id IS NULL
+                q = q.eq("user_id", str(entity_id)).is_("org_id", "null")
+            else:
+                # Org usage: org_id = entity_id (aggregates all users)
+                q = q.eq("org_id", str(entity_id))
+            return q
+
         # Monthly tokens
         if "monthly_tokens" in limits_dict:
             limit = limits_dict["monthly_tokens"]
@@ -349,12 +360,13 @@ class LimitService:
             # Get usage
             today = date.today()
             period_start = date(today.year, today.month, 1)
-            result = db.admin.table("token_usage").select("total_tokens").eq(
-                "user_id" if entity_type == "user" else "org_id", str(entity_id)
-            ).eq("period_start", period_start.isoformat()).execute()
+            
+            result = build_query("token_usage", "total_tokens").eq(
+                "period_start", period_start.isoformat()
+            ).execute()
 
             if result.data:
-                stats.monthly_tokens_used = result.data[0]["total_tokens"]
+                stats.monthly_tokens_used = sum(item["total_tokens"] for item in result.data)
             stats.monthly_tokens_remaining = max(0, stats.monthly_tokens_limit - stats.monthly_tokens_used)
 
             # Reset date
@@ -365,25 +377,27 @@ class LimitService:
 
         # Daily requests
         today_date = date.today()
-        daily_result = db.admin.table("usage_daily_summary").select("*").eq(
-            "user_id" if entity_type == "user" else "org_id", str(entity_id)
-        ).eq("usage_date", today_date.isoformat()).execute()
+        daily_result = build_query("usage_daily_summary", "*").eq(
+            "usage_date", today_date.isoformat()
+        ).execute()
 
         if daily_result.data:
-            daily_summary = daily_result.data[0]
+            # Sum up usage (handles both single user and org aggregation)
+            chat_used = sum(item["chat_requests"] for item in daily_result.data)
+            rag_used = sum(item["rag_requests"] for item in daily_result.data)
 
             # Chat requests
             if "daily_chat_requests" in limits_dict:
                 limit = limits_dict["daily_chat_requests"]
                 stats.daily_chat_requests_limit = limit.limit_value
-                stats.daily_chat_requests_used = daily_summary["chat_requests"]
+                stats.daily_chat_requests_used = chat_used
                 stats.daily_chat_requests_remaining = max(0, stats.daily_chat_requests_limit - stats.daily_chat_requests_used)
 
             # RAG requests
             if "daily_rag_requests" in limits_dict:
                 limit = limits_dict["daily_rag_requests"]
                 stats.daily_rag_requests_limit = limit.limit_value
-                stats.daily_rag_requests_used = daily_summary["rag_requests"]
+                stats.daily_rag_requests_used = rag_used
                 stats.daily_rag_requests_remaining = max(0, stats.daily_rag_requests_limit - stats.daily_rag_requests_used)
 
         # Rate limit (current minute)
@@ -394,12 +408,12 @@ class LimitService:
             now = datetime.utcnow()
             window_start = now.replace(second=0, microsecond=0)
 
-            rate_result = db.admin.table("usage_rate_tracking").select("request_count").eq(
-                "user_id" if entity_type == "user" else "org_id", str(entity_id)
-            ).eq("window_start", window_start.isoformat()).execute()
+            rate_result = build_query("usage_rate_tracking", "request_count").eq(
+                "window_start", window_start.isoformat()
+            ).execute()
 
             if rate_result.data:
-                stats.current_requests_per_minute = rate_result.data[0]["request_count"]
+                stats.current_requests_per_minute = sum(item["request_count"] for item in rate_result.data)
             stats.requests_per_minute_remaining = max(0, stats.requests_per_minute_limit - stats.current_requests_per_minute)
 
         return stats

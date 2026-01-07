@@ -213,7 +213,12 @@ class DocumentService:
             if result and result.data:
                 return result.data
         except Exception as e:
-            print(f"Error fetching document with org filter: {e}")
+            # 406 Not Acceptable is returned by PostgREST when maybe_single finds 0 rows
+            # 204 Missing response might also occur
+            # This is expected for "Not Found"
+            error_str = str(e)
+            if "406" not in error_str and "'code': '204'" not in error_str:
+                print(f"Error fetching document with org filter: {e}")
             # Fallback: try without org_id filter
             pass
 
@@ -224,7 +229,9 @@ class DocumentService:
             ).eq("status", "active").maybe_single().execute()
             return result.data if result and result.data else None
         except Exception as e:
-            print(f"Error fetching document: {e}")
+            error_str = str(e)
+            if "406" not in error_str and "'code': '204'" not in error_str:
+                print(f"Error fetching document: {e}")
             return None
 
     @staticmethod
@@ -272,14 +279,43 @@ class DocumentService:
     @staticmethod
     async def get_download_url(doc_id: UUID, org_id: Optional[UUID]) -> Optional[str]:
         doc = await DocumentService.get_document(doc_id, org_id)
+        
+        # Fallback: Check session_documents if not found in storage_nodes
+        if not doc:
+            try:
+                # session_documents does not have org_id column
+                result = db.admin.table("session_documents").select("*").eq("id", str(doc_id)).maybe_single().execute()
+                
+                if result and result.data:
+                    doc = result.data
+                    doc["name"] = doc.get("filename")
+            except Exception:
+                pass
+
         if not doc or not doc.get("s3_key"):
             return None
-        return await s3_client.get_presigned_download_url(doc["s3_key"], doc["name"])
+        return await s3_client.get_presigned_download_url(doc["s3_key"], doc.get("name"))
 
     @staticmethod
     async def get_view_url(doc_id: UUID, org_id: Optional[UUID]) -> Optional[str]:
         """Get presigned URL for viewing document in browser."""
         doc = await DocumentService.get_document(doc_id, org_id)
+        
+        # Fallback: Check session_documents if not found in storage_nodes
+        if not doc:
+            try:
+                # session_documents does not have org_id column
+                result = db.admin.table("session_documents").select("*").eq("id", str(doc_id)).maybe_single().execute()
+                
+                if result and result.data:
+                    doc = result.data
+                    doc["name"] = doc.get("filename") # Ensure name is available for view as well
+                    # Use mime_type if available, else fallback to file_type (though file_type is usually extension)
+                    if not doc.get("mime_type") and doc.get("file_type"):
+                        doc["mime_type"] = doc.get("file_type")
+            except Exception:
+                pass
+
         if not doc or not doc.get("s3_key"):
             return None
         return await s3_client.get_presigned_view_url(doc["s3_key"], doc.get("mime_type"))

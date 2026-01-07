@@ -60,11 +60,22 @@ class TokenUsageService:
         else:
             query = query.is_("org_id", "null")
 
-        result = query.maybe_single().execute()
+        try:
+            result = query.maybe_single().execute()
+            data = result.data
+        except Exception as e:
+            error_str = str(e)
+            # Handle 406 Not Acceptable (PostgREST empty result) or 204 Missing Response
+            if "406" in error_str or "'code': '204'" in error_str:
+                data = None
+            else:
+                # Re-raise other errors
+                print(f"Error fetching token usage: {e}")
+                raise e
 
-        if result.data:
+        if data:
             # Update existing
-            existing = result.data
+            existing = data
             db.admin.table("token_usage").update({
                 "prompt_tokens": existing["prompt_tokens"] + prompt_tokens,
                 "completion_tokens": existing["completion_tokens"] + completion_tokens,
