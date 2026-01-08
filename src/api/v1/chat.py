@@ -2,7 +2,7 @@
 from typing import Optional, List
 from uuid import UUID
 from datetime import date
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, Query, HTTPException
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, Query, HTTPException, BackgroundTasks
 
 from src.core.dependencies import get_current_user_id, get_current_org_context
 from src.core.chat_websocket import chat_ws_manager
@@ -285,6 +285,7 @@ async def init_document_upload(
 async def complete_document_upload(
     session_id: UUID,
     session_doc_id: UUID,
+    background_tasks: BackgroundTasks,
     user_id: UUID = Depends(get_current_user_id),
     org_context: dict = Depends(get_current_org_context)
 ):
@@ -294,9 +295,34 @@ async def complete_document_upload(
         await session_document_service.complete_upload(
             session_document_id=session_doc_id,
             user_id=user_id,
-            org_id=UUID(org_id) if org_id else None
+            org_id=UUID(org_id) if org_id else None,
+            background_tasks=background_tasks
         )
         return {"success": True}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sessions/{session_id}/documents/{session_doc_id}/reprocess")
+async def reprocess_document(
+    session_id: UUID,
+    session_doc_id: UUID,
+    background_tasks: BackgroundTasks,
+    user_id: UUID = Depends(get_current_user_id),
+    org_context: dict = Depends(get_current_org_context)
+):
+    """Reprocess a failed or stuck session document."""
+    org_id = org_context.get("org_id")
+    try:
+        await session_document_service.reprocess_document(
+            session_document_id=session_doc_id,
+            user_id=user_id,
+            org_id=UUID(org_id) if org_id else None,
+            background_tasks=background_tasks
+        )
+        return {"success": True, "message": "Document reprocessing started"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

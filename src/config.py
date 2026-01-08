@@ -115,7 +115,7 @@ class Settings(BaseSettings):
     EMBEDDING_DIMENSIONS: int = 1536
 
     # OpenAI Chat
-    OPENAI_CHAT_MODEL: str = "gpt-4o-mini"
+    OPENAI_CHAT_MODEL: str = "gpt-4.1-mini-2025-04-14"
     OPENAI_CHAT_MAX_TOKENS: int = 4096
     OPENAI_CHAT_TEMPERATURE: float = 0.7
 

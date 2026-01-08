@@ -1,13 +1,20 @@
 """Session document service for chat document management."""
 import asyncio
-from typing import Optional, List
+import logging
+from typing import Optional, List, TYPE_CHECKING
 from uuid import UUID, uuid4
 from datetime import datetime
 
 from src.core.database import db
 from src.core.s3 import s3_client
+from src.core.chat_websocket import chat_ws_manager
 from src.services.embedding_service import embedding_service
 from src.config import settings
+
+if TYPE_CHECKING:
+    from fastapi import BackgroundTasks
+
+logger = logging.getLogger(__name__)
 
 
 class SessionDocumentService:
@@ -79,6 +86,28 @@ class SessionDocumentService:
         }
 
     @staticmethod
+    def _process_document_background_sync(
+        session_document_id: UUID,
+        org_id: Optional[UUID],
+        s3_key: str,
+        file_type: str,
+        user_id: str,
+        session_id: str
+    ):
+        """
+        Synchronous wrapper for background task processing.
+        FastAPI BackgroundTasks works better with sync functions that run their own event loop.
+        """
+        asyncio.run(SessionDocumentService._process_document_background(
+            session_document_id=session_document_id,
+            org_id=org_id,
+            s3_key=s3_key,
+            file_type=file_type,
+            user_id=user_id,
+            session_id=session_id
+        ))
+
+    @staticmethod
     async def _process_document_background(
         session_document_id: UUID,
         org_id: Optional[UUID],
@@ -91,6 +120,7 @@ class SessionDocumentService:
         Background task for processing document embeddings.
         This runs asynchronously without blocking the HTTP response.
         """
+        logger.info(f"Starting embedding processing for session document {session_document_id}")
         try:
             # Process embeddings for session document (uses chat-sessions index)
             # Use session_document_id as the document_id since we're not using storage_nodes
@@ -111,18 +141,38 @@ class SessionDocumentService:
                 "processed_at": datetime.utcnow().isoformat()
             }).eq("id", str(session_document_id)).execute()
 
+            logger.info(f"Successfully completed embedding processing for session document {session_document_id}")
+
+            # Send WebSocket notification about completion
+            await chat_ws_manager.send_to_user(user_id, {
+                "type": "session_document_ready",
+                "session_id": session_id,
+                "document_id": str(session_document_id),
+                "embedding_status": "completed"
+            })
+
         except Exception as e:
-            print(f"Background processing failed for {session_document_id}: {e}")
+            logger.error(f"Background processing failed for session document {session_document_id}: {e}", exc_info=True)
             # Update failed status
             db.admin.table("session_documents").update({
                 "embedding_status": "failed"
             }).eq("id", str(session_document_id)).execute()
 
+            # Send WebSocket notification about failure
+            await chat_ws_manager.send_to_user(user_id, {
+                "type": "session_document_ready",
+                "session_id": session_id,
+                "document_id": str(session_document_id),
+                "embedding_status": "failed",
+                "error": str(e)
+            })
+
     @staticmethod
     async def complete_upload(
         session_document_id: UUID,
         user_id: UUID,
-        org_id: Optional[UUID]
+        org_id: Optional[UUID],
+        background_tasks: Optional["BackgroundTasks"] = None
     ) -> dict:
         """
         Complete document upload and trigger embedding in background.
@@ -166,14 +216,29 @@ class SessionDocumentService:
             "embedding_status": "processing"
         }).eq("id", str(session_document_id)).execute()
 
+        # Send WebSocket notification about the new document
+        await chat_ws_manager.send_to_user(str(user_id), {
+            "type": "session_document_uploaded",
+            "session_id": session_doc["session_id"],
+            "document": {
+                "id": str(session_document_id),
+                "filename": session_doc["filename"],
+                "file_type": session_doc.get("file_type"),
+                "file_size": session_doc.get("file_size", 0),
+                "embedding_status": "processing"
+            }
+        })
+
         # Check if file type supports embeddings
         file_type = session_doc.get("file_type", "").lower()
         supported_types = settings.SUPPORTED_EMBEDDING_TYPES
 
         if file_type in supported_types:
-            # Start background processing (non-blocking)
-            asyncio.create_task(
-                SessionDocumentService._process_document_background(
+            logger.info(f"Scheduling background embedding for session document {session_document_id}")
+            # Use FastAPI BackgroundTasks if provided (more reliable than asyncio.create_task)
+            if background_tasks:
+                background_tasks.add_task(
+                    SessionDocumentService._process_document_background_sync,
                     session_document_id=session_document_id,
                     org_id=org_id,
                     s3_key=session_doc["s3_key"],
@@ -181,7 +246,18 @@ class SessionDocumentService:
                     user_id=str(user_id),
                     session_id=session_doc["session_id"]
                 )
-            )
+            else:
+                # Fallback to asyncio.create_task (less reliable but works for WebSocket calls)
+                asyncio.create_task(
+                    SessionDocumentService._process_document_background(
+                        session_document_id=session_document_id,
+                        org_id=org_id,
+                        s3_key=session_doc["s3_key"],
+                        file_type=file_type,
+                        user_id=str(user_id),
+                        session_id=session_doc["session_id"]
+                    )
+                )
         else:
             # File type doesn't support embeddings
             db.admin.table("session_documents").update({
@@ -264,6 +340,78 @@ class SessionDocumentService:
         ).execute()
 
         return [d["id"] for d in result.data] if result.data else []
+
+    @staticmethod
+    async def reprocess_document(
+        session_document_id: UUID,
+        user_id: UUID,
+        org_id: Optional[UUID],
+        background_tasks: Optional["BackgroundTasks"] = None
+    ) -> dict:
+        """
+        Reprocess a session document that failed or got stuck.
+        Useful for retrying failed embeddings.
+        """
+        # Get session document
+        session_doc_result = db.admin.table("session_documents").select(
+            "*"
+        ).eq("id", str(session_document_id)).single().execute()
+
+        if not session_doc_result.data:
+            raise ValueError("Session document not found")
+
+        session_doc = session_doc_result.data
+
+        # Verify user owns this document
+        if session_doc["user_id"] != str(user_id):
+            raise ValueError("Access denied")
+
+        # Only allow reprocessing of pending, processing, or failed documents
+        current_status = session_doc.get("embedding_status")
+        if current_status == "completed":
+            raise ValueError("Document already processed successfully")
+
+        # Update status to processing
+        db.admin.table("session_documents").update({
+            "embedding_status": "processing"
+        }).eq("id", str(session_document_id)).execute()
+
+        # Check if file type supports embeddings
+        file_type = session_doc.get("file_type", "").lower()
+        supported_types = settings.SUPPORTED_EMBEDDING_TYPES
+
+        if file_type in supported_types:
+            logger.info(f"Reprocessing session document {session_document_id}")
+            # Use FastAPI BackgroundTasks if provided
+            if background_tasks:
+                background_tasks.add_task(
+                    SessionDocumentService._process_document_background_sync,
+                    session_document_id=session_document_id,
+                    org_id=org_id,
+                    s3_key=session_doc["s3_key"],
+                    file_type=file_type,
+                    user_id=str(user_id),
+                    session_id=session_doc["session_id"]
+                )
+            else:
+                asyncio.create_task(
+                    SessionDocumentService._process_document_background(
+                        session_document_id=session_document_id,
+                        org_id=org_id,
+                        s3_key=session_doc["s3_key"],
+                        file_type=file_type,
+                        user_id=str(user_id),
+                        session_id=session_doc["session_id"]
+                    )
+                )
+        else:
+            # File type doesn't support embeddings
+            db.admin.table("session_documents").update({
+                "embedding_status": "completed",
+                "processed_at": datetime.utcnow().isoformat()
+            }).eq("id", str(session_document_id)).execute()
+
+        return session_doc
 
     @staticmethod
     async def delete_all_session_documents(
