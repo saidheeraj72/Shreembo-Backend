@@ -158,6 +158,9 @@ class EmbeddingService:
                         "embedding_status": "failed"
                     }).eq("id", str(document_id)).execute()
                 await ws_manager.send_upload_progress(user_id, upload_id, "complete", 100, str(document_id))
+                
+                if is_session_document:
+                    raise ValueError("Text extraction failed")
                 return
 
             await ws_manager.send_upload_progress(user_id, upload_id, "generating_embeddings", 60)
@@ -223,6 +226,7 @@ class EmbeddingService:
                     "embedding_status": "failed"
                 }).eq("id", str(document_id)).execute()
             await ws_manager.send_upload_progress(user_id, upload_id, "failed", 0, error=str(e))
+            raise
 
     @staticmethod
     async def search(query: str, org_id: Optional[UUID], user_id: UUID, top_k: int = 10,

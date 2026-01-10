@@ -112,7 +112,8 @@ class ChatConnectionManager:
                 session_id=UUID(session_id) if session_id else None,
                 content=data.get("content", ""),
                 rag_enabled=data.get("rag_enabled"),
-                web_search_enabled=data.get("web_search_enabled")
+                web_search_enabled=data.get("web_search_enabled"),
+                document_source=data.get("document_source", "organization")
             )
 
         elif msg_type == "stop_generation":
@@ -133,9 +134,13 @@ class ChatConnectionManager:
         session_id: UUID,
         content: str,
         rag_enabled: Optional[bool],
-        web_search_enabled: Optional[bool]
+        web_search_enabled: Optional[bool],
+        document_source: str = "organization"
     ):
         """Process a chat message with streaming response."""
+        # Import here to avoid circular dependency
+        from src.services.session_document_service import session_document_service
+
         if not session_id or not content:
             await websocket.send_json({
                 "type": "stream_error",
@@ -216,6 +221,11 @@ class ChatConnectionManager:
                 "message_id": str(response_message_id)
             })
 
+            # Wait for any pending documents if RAG is enabled OR if we are in a session
+            # (since RAG off now implies session-only search, we must wait for session docs)
+            if rag_enabled or session_id:
+                await session_document_service.wait_for_pending_documents(session_id)
+
             # Generate streaming response
             full_response = ""
             rag_results = []
@@ -231,7 +241,8 @@ class ChatConnectionManager:
                 user_id=user_id,
                 org_id=org_id,
                 rag_enabled=rag_enabled,
-                web_search_enabled=web_search_enabled
+                web_search_enabled=web_search_enabled,
+                document_source=document_source
             ):
                 # Check if generation was stopped
                 if not self.active_generations.get(generation_key, False):

@@ -59,6 +59,15 @@ class SessionDocumentUploadInit(BaseModel):
     size_bytes: int
 
 
+class SessionDocumentUploadComplete(BaseModel):
+    """Complete document upload within chat session."""
+    s3_key: str
+    filename: str
+    file_type: str
+    file_size: int
+    mime_type: str
+
+
 # ============== Response Models ==============
 
 class RAGSource(BaseModel):
@@ -79,11 +88,11 @@ class WebSearchResult(BaseModel):
 
 class MessageAttachment(BaseModel):
     """Document attachment in a message."""
-    session_document_id: UUID
     filename: str
     file_type: Optional[str] = None
     file_size: int
-    document_id: Optional[UUID] = None  # Deprecated: kept for backward compatibility
+    status: Optional[str] = None
+    session_document_id: Optional[UUID] = None  # Set after processing completes
 
 
 class ChatMessageResponse(BaseModel):
@@ -132,12 +141,11 @@ class SessionDocumentResponse(BaseModel):
     """Session document response."""
     id: UUID
     session_id: UUID
-    document_id: UUID
     filename: str
     file_type: Optional[str] = None
     file_size: int
     embedding_status: EmbeddingStatus
-    uploaded_at: datetime
+    uploaded_at: Optional[datetime] = None
     processed_at: Optional[datetime] = None
 
     class Config:
@@ -149,8 +157,12 @@ class SessionDocumentUploadResponse(BaseModel):
     upload_id: str
     upload_url: str
     s3_key: str
-    session_document_id: UUID
-    document_id: Optional[UUID] = None  # Deprecated: kept for backward compatibility
+    session_id: str
+    user_id: str
+    filename: str
+    file_type: Optional[str] = None
+    file_size: int
+    mime_type: str
 
 
 # ============== Token Usage Models ==============

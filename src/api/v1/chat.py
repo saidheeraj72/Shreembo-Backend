@@ -16,8 +16,8 @@ from src.services.permission_service import permission_service
 from src.models.chat import (
     ChatSessionCreate, ChatSessionUpdate, ChatMessageRequest,
     ChatSessionResponse, ChatSessionWithMessages, ChatMessageResponse,
-    SessionDocumentResponse, SessionDocumentUploadInit, SessionDocumentUploadResponse,
-    TokenUsageResponse, TokenUsageSummary
+    SessionDocumentResponse, SessionDocumentUploadInit, SessionDocumentUploadComplete,
+    SessionDocumentUploadResponse, TokenUsageResponse, TokenUsageSummary
 )
 
 router = APIRouter(tags=["chat"])
@@ -281,10 +281,10 @@ async def init_document_upload(
     return result
 
 
-@router.post("/sessions/{session_id}/documents/{session_doc_id}/complete")
+@router.post("/sessions/{session_id}/documents/complete")
 async def complete_document_upload(
     session_id: UUID,
-    session_doc_id: UUID,
+    data: SessionDocumentUploadComplete,
     background_tasks: BackgroundTasks,
     user_id: UUID = Depends(get_current_user_id),
     org_context: dict = Depends(get_current_org_context)
@@ -292,13 +292,18 @@ async def complete_document_upload(
     """Complete document upload and trigger embedding."""
     org_id = org_context.get("org_id")
     try:
-        await session_document_service.complete_upload(
-            session_document_id=session_doc_id,
+        result = await session_document_service.complete_upload(
+            session_id=session_id,
             user_id=user_id,
             org_id=UUID(org_id) if org_id else None,
+            s3_key=data.s3_key,
+            filename=data.filename,
+            file_type=data.file_type,
+            file_size=data.file_size,
+            mime_type=data.mime_type,
             background_tasks=background_tasks
         )
-        return {"success": True}
+        return {"success": True, **result}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

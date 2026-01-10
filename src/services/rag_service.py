@@ -75,7 +75,10 @@ class RAGService:
         user_id: UUID,
         org_id: Optional[UUID],
         session_id: Optional[UUID] = None,
-        top_k: int = None
+        top_k: int = None,
+        document_source: str = "organization",
+        search_main: bool = True,
+        search_session: bool = True
     ) -> List[dict]:
         """
         Search documents using vector similarity with permission filtering.
@@ -86,6 +89,9 @@ class RAGService:
             org_id: Organization context (None for personal)
             session_id: Optional session to include session documents
             top_k: Number of results to return
+            document_source: "personal" or "organization" (default)
+            search_main: Whether to search the main (org/personal) index
+            search_session: Whether to search the session-specific index
         """
         top_k = top_k or settings.RAG_TOP_K
 
@@ -101,21 +107,25 @@ class RAGService:
         session_results = []
 
         # Query main index (organization or personal documents)
-        namespace = str(org_id) if org_id else str(user_id)
-        print(f"RAG: Searching main index in namespace: {namespace}, top_k: {top_k}")
+        if search_main:
+            namespace = str(user_id)
+            if org_id and document_source != "personal":
+                namespace = str(org_id)
+                
+            print(f"RAG: Searching main index in namespace: {namespace}, top_k: {top_k}")
 
-        results = await pinecone_client.query(
-            vector=query_embedding,
-            namespace=namespace,
-            top_k=top_k * 2,  # Get extra for filtering
-            filter=None
-        )
-        if results:
-            main_results = results
-            print(f"RAG: Got {len(results)} results from main index")
+            results = await pinecone_client.query(
+                vector=query_embedding,
+                namespace=namespace,
+                top_k=top_k * 2,  # Get extra for filtering
+                filter=None
+            )
+            if results:
+                main_results = results
+                print(f"RAG: Got {len(results)} results from main index")
 
-        # Also query chat-sessions index if we have a session
-        if session_id:
+        # Query chat-sessions index if we have a session AND searching session is enabled
+        if session_id and search_session:
             print(f"RAG: Searching chat-sessions index for session: {session_id}")
             
             # Determine namespace for session documents
@@ -132,9 +142,11 @@ class RAGService:
                 if session_result and session_result.data:
                     # Use Session Owner's ID as namespace
                     session_namespace = str(session_result.data["user_id"])
+                    print(f"RAG: Session owner found: {session_namespace}")
             except Exception as e:
                 print(f"RAG: Error fetching session owner: {e}")
 
+            print(f"RAG: Querying Pinecone chat-sessions index. Namespace: {session_namespace}, SessionID: {session_id}")
             session_index_results = await pinecone_client.query(
                 vector=query_embedding,
                 namespace=session_namespace,
@@ -144,7 +156,9 @@ class RAGService:
             )
             if session_index_results:
                 session_results = session_index_results
-                print(f"RAG: Got {len(session_index_results)} results from chat-sessions index (namespace: {session_namespace})")
+                print(f"RAG: Got {len(session_index_results)} matches from Pinecone chat-sessions index")
+            else:
+                print(f"RAG: No matches from Pinecone chat-sessions index for session {session_id} in namespace {session_namespace}")
 
         if not main_results and not session_results:
             print(f"RAG: No results from Pinecone")
@@ -206,12 +220,16 @@ class RAGService:
             for r in session_results:
                 session_doc_id = r.metadata.get('document_id')
                 if session_doc_id in session_doc_map:
+                    # Boost score for session documents to prioritize them
+                    # This ensures session-specific context is not "crowded out" by main index results
+                    boosted_score = r.score * 1.1
+
                     session_filtered_results.append({
                         'document_id': session_doc_id,  # This is actually session_document_id
                         'document_name': session_doc_map.get(session_doc_id, 'Unknown'),
                         'chunk_text': r.metadata.get('chunk_text', ''),
                         'chunk_index': r.metadata.get('chunk_index', 0),
-                        'score': r.score,
+                        'score': boosted_score,
                         'source': 'session'  # Mark as session document
                     })
 
@@ -276,7 +294,8 @@ class RAGService:
         user_id: UUID,
         org_id: Optional[UUID],
         rag_enabled: bool = True,
-        web_search_enabled: bool = False
+        web_search_enabled: bool = False,
+        document_source: str = "organization"
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Generate streaming response with RAG and optional web search.
@@ -300,19 +319,27 @@ class RAGService:
 
         try:
             # 1. RAG Search - Get top 5 chunks
-            if rag_enabled:
-                rag_results = await RAGService.search_documents(
-                    query=user_message,
-                    user_id=user_id,
-                    org_id=org_id,
-                    session_id=session_id,
-                    top_k=5  # Get top 5 chunks
-                )
-                if rag_results:
-                    yield {
-                        "type": "rag_context",
-                        "data": rag_results
-                    }
+            # Logic: If rag_enabled is True -> Search Main Index
+            #        If rag_enabled is False -> Search Session Index
+            search_main = rag_enabled
+            search_session = not rag_enabled
+
+            rag_results = await RAGService.search_documents(
+                query=user_message,
+                user_id=user_id,
+                org_id=org_id,
+                session_id=session_id,
+                top_k=5,  # Get top 5 chunks
+                document_source=document_source,
+                search_main=search_main,
+                search_session=search_session
+            )
+            
+            if rag_results:
+                yield {
+                    "type": "rag_context",
+                    "data": rag_results
+                }
 
             # 2. Web Search (Conditional - could also add routing here)
             if web_search_enabled and settings.SERPER_API_KEY:
@@ -413,7 +440,8 @@ class RAGService:
         user_id: UUID,
         org_id: Optional[UUID],
         rag_enabled: bool = True,
-        web_search_enabled: bool = False
+        web_search_enabled: bool = False,
+        document_source: str = "organization"
     ) -> Dict[str, Any]:
         """
         Generate non-streaming response (for REST API fallback).
@@ -431,7 +459,8 @@ class RAGService:
             user_id=user_id,
             org_id=org_id,
             rag_enabled=rag_enabled,
-            web_search_enabled=web_search_enabled
+            web_search_enabled=web_search_enabled,
+            document_source=document_source
         ):
             if chunk["type"] == "rag_context":
                 rag_results = chunk["data"]
