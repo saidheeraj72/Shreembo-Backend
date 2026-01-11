@@ -34,14 +34,29 @@ class Settings(BaseSettings):
             "http://localhost:8080",
             "https://shreembo.com",
             "https://www.shreembo.com",
+            "https://enterprise-intelligence-hub.pages.dev"
         ]
     )
 
     @validator("BACKEND_CORS_ORIGINS", pre=True)
     def assemble_cors_origins(cls, v):
         if isinstance(v, str):
-            return [origin.strip() for origin in v.split(",")]
-        return v
+            origins = [origin.strip() for origin in v.split(",")]
+        else:
+            origins = v
+        
+        # Force include production domains
+        required_origins = [
+            "https://shreembo.com",
+            "https://www.shreembo.com",
+            "https://enterprise-intelligence-hub.pages.dev"
+        ]
+        
+        for origin in required_origins:
+            if origin not in origins:
+                origins.append(origin)
+                
+        return origins
 
     # Supabase
     SUPABASE_URL: str
