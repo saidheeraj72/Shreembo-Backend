@@ -27,6 +27,7 @@ openai
 
 # Document Processing
 markitdown  # Universal document parser (handles PDF, DOCX, XLSX, PPTX, etc.)
+markitdown[pdf]
 
 # WebSocket
 websockets
