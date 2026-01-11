@@ -319,10 +319,11 @@ class RAGService:
 
         try:
             # 1. RAG Search - Get top 5 chunks
-            # Logic: If rag_enabled is True -> Search Main Index
-            #        If rag_enabled is False -> Search Session Index
+            # Logic: 
+            #   - search_main: controlled by rag_enabled (search org/personal documents)
+            #   - search_session: always True when session_id exists (session documents should always be searched)
             search_main = rag_enabled
-            search_session = not rag_enabled
+            search_session = True  # Always search session documents when in a chat session
 
             rag_results = await RAGService.search_documents(
                 query=user_message,
