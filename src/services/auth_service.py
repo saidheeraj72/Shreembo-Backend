@@ -518,6 +518,309 @@ class AuthService:
             # Since we just signed up, we can sign in to get tokens
             return await AuthService.login(invite_email, password, ip_address, user_agent)
 
+    @staticmethod
+    async def get_user_organizations(user_id: UUID) -> list:
+        """
+        Get all organizations the user is a member of.
+
+        Args:
+            user_id: User ID
+
+        Returns:
+            List of organizations with membership details
+        """
+        # Get organization memberships
+        memberships_response = (
+            db.admin.table("organization_members")
+            .select("org_id, status, role_id, joined_at, title, department")
+            .eq("user_id", str(user_id))
+            .eq("status", "active")
+            .execute()
+        )
+
+        if not memberships_response.data:
+            return []
+
+        # Get organization details for each membership
+        organizations = []
+        for membership in memberships_response.data:
+            org_response = (
+                db.admin.table("organizations")
+                .select("id, name, slug, logo_url, domain, is_active")
+                .eq("id", membership["org_id"])
+                .eq("is_active", True)
+                .maybe_single()
+                .execute()
+            )
+
+            if org_response and org_response.data:
+                org_data = org_response.data
+                org_data["role_id"] = membership["role_id"]
+                org_data["joined_at"] = membership["joined_at"]
+                org_data["title"] = membership["title"]
+                org_data["department"] = membership["department"]
+                organizations.append(org_data)
+
+        return organizations
+
+    @staticmethod
+    async def switch_organization(user_id: UUID, target_org_id: Optional[UUID]) -> Dict:
+        """
+        Switch user's active organization context.
+
+        Args:
+            user_id: User ID
+            target_org_id: Target organization ID (None for personal workspace)
+
+        Returns:
+            Updated user data with new org context and permissions
+        """
+        from src.services.permission_service import permission_service
+        from src.services.super_admin_service import super_admin_service
+        from src.core.exceptions import AuthorizationError, NotFoundError
+
+        # Get user profile
+        profile_response = (
+            db.admin.table("profiles")
+            .select("*")
+            .eq("id", str(user_id))
+            .single()
+            .execute()
+        )
+
+        if not profile_response.data:
+            raise NotFoundError("User not found")
+
+        user_profile = profile_response.data
+
+        # If switching to personal workspace (null org)
+        if target_org_id is None:
+            # Update profile to personal context
+            db.admin.table("profiles").update({
+                "org_id": None,
+                "account_type": "personal"
+            }).eq("id", str(user_id)).execute()
+
+            # Refresh profile
+            updated_profile = (
+                db.admin.table("profiles")
+                .select("*")
+                .eq("id", str(user_id))
+                .single()
+                .execute()
+            )
+
+            user_data = updated_profile.data
+            user_data["permissions"] = {}
+            
+            # Check super admin status
+            is_super_admin = await super_admin_service.verify_super_admin(user_data["email"])
+            user_data["is_super_admin"] = is_super_admin
+            if is_super_admin:
+                user_data["permissions"]["super_admin"] = {"access": True}
+
+            return user_data
+
+        # Verify user is a member of the target organization
+        membership_response = (
+            db.admin.table("organization_members")
+            .select("*")
+            .eq("user_id", str(user_id))
+            .eq("org_id", str(target_org_id))
+            .eq("status", "active")
+            .maybe_single()
+            .execute()
+        )
+
+        if not membership_response.data:
+            raise AuthorizationError("You are not a member of this organization")
+
+        # Verify organization is active
+        org_response = (
+            db.admin.table("organizations")
+            .select("id, name, is_active")
+            .eq("id", str(target_org_id))
+            .eq("is_active", True)
+            .maybe_single()
+            .execute()
+        )
+
+        if not org_response.data:
+            raise NotFoundError("Organization not found or inactive")
+
+        # Update profile with new org context
+        db.admin.table("profiles").update({
+            "org_id": str(target_org_id),
+            "account_type": "organization"
+        }).eq("id", str(user_id)).execute()
+
+        # Get updated profile with permissions
+        return await AuthService.get_current_user_with_permissions(user_id, target_org_id)
+
+    @staticmethod
+    async def create_organization(
+        user_id: UUID,
+        name: str,
+        slug: Optional[str] = None,
+        domain: Optional[str] = None,
+    ) -> Dict:
+        """
+        Create a new organization with the user as owner.
+
+        Args:
+            user_id: User creating the organization
+            name: Organization name
+            slug: URL-friendly slug (auto-generated if not provided)
+            domain: Organization domain (optional)
+
+        Returns:
+            Dictionary with organization and updated user data
+        """
+        from src.core.exceptions import ConflictError
+        import re
+
+        # Generate slug if not provided
+        if not slug:
+            slug = re.sub(r'[^a-z0-9-]', '-', name.lower())
+            slug = re.sub(r'-+', '-', slug).strip('-')
+
+        # Check if slug already exists
+        existing_slug = (
+            db.admin.table("organizations")
+            .select("id")
+            .eq("slug", slug)
+            .maybe_single()
+            .execute()
+        )
+
+        if existing_slug and existing_slug.data:
+            # Add random suffix to make unique
+            import random
+            import string
+            suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
+            slug = f"{slug}-{suffix}"
+
+        # Check if domain already exists (if provided)
+        if domain:
+            existing_domain = (
+                db.admin.table("organizations")
+                .select("id")
+                .eq("domain", domain.lower())
+                .maybe_single()
+                .execute()
+            )
+
+            if existing_domain and existing_domain.data:
+                raise ConflictError(f"Domain '{domain}' is already registered to another organization")
+
+        # Create organization
+        org_data = {
+            "name": name,
+            "slug": slug,
+            "domain": domain.lower() if domain else None,
+            "owner_id": str(user_id),
+            "plan_type": "free",
+            "subscription_status": "trial",
+            "user_limit": 5,
+            "storage_limit_gb": 10,
+            "is_active": True,
+        }
+
+        org_response = db.admin.table("organizations").insert(org_data).execute()
+
+        if not org_response.data:
+            raise Exception("Failed to create organization")
+
+        org = org_response.data[0]
+        org_id = org["id"]
+
+        # Create default roles for the organization
+        default_roles = [
+            {
+                "org_id": org_id,
+                "name": "Owner",
+                "slug": "owner",
+                "description": "Organization owner with full access",
+                "is_system_role": True,
+                "is_custom_role": False,
+                "priority": 100,
+                "color": "#dc2626",
+            },
+            {
+                "org_id": org_id,
+                "name": "Admin",
+                "slug": "admin",
+                "description": "Administrator with management access",
+                "is_system_role": True,
+                "is_custom_role": False,
+                "priority": 90,
+                "color": "#ea580c",
+            },
+            {
+                "org_id": org_id,
+                "name": "Member",
+                "slug": "member",
+                "description": "Regular member with standard access",
+                "is_system_role": True,
+                "is_custom_role": False,
+                "priority": 10,
+                "color": "#6366f1",
+            },
+        ]
+
+        for role in default_roles:
+            db.admin.table("roles").insert(role).execute()
+
+        # Get the owner role
+        owner_role_response = (
+            db.admin.table("roles")
+            .select("id")
+            .eq("org_id", org_id)
+            .eq("slug", "owner")
+            .single()
+            .execute()
+        )
+
+        owner_role_id = owner_role_response.data["id"] if owner_role_response.data else None
+
+        # Add user as organization member (owner)
+        membership_data = {
+            "org_id": org_id,
+            "user_id": str(user_id),
+            "role_id": owner_role_id,
+            "status": "active",
+            "joined_at": datetime.utcnow().isoformat(),
+        }
+
+        db.admin.table("organization_members").insert(membership_data).execute()
+
+        # Update user profile to point to new org
+        db.admin.table("profiles").update({
+            "org_id": org_id,
+            "account_type": "organization",
+        }).eq("id", str(user_id)).execute()
+
+        # Get updated user with permissions
+        updated_user = await AuthService.get_current_user_with_permissions(user_id, UUID(org_id))
+
+        # Log the creation
+        await audit_service.log(
+            org_id=UUID(org_id),
+            user_id=user_id,
+            user_email=updated_user.get("email"),
+            user_name=updated_user.get("full_name"),
+            action=AuditAction.CREATE,
+            resource_type="organization",
+            resource_id=UUID(org_id),
+            description=f"Created organization: {name}",
+        )
+
+        return {
+            "organization": org,
+            "user": updated_user,
+        }
+
 
 # Global auth service instance
 auth_service = AuthService()
+
