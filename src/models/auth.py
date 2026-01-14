@@ -77,3 +77,16 @@ class AcceptInvitationRequest(BaseModel):
     email: EmailStr
     password: Optional[str] = Field(None, min_length=8)
     full_name: Optional[str] = None
+
+
+class VerifyInviteResponse(BaseModel):
+    """Verify invite response model."""
+
+    valid: bool
+    user_exists: bool
+    email: str
+    org_name: str
+    org_logo: Optional[str] = None
+    inviter_name: Optional[str] = None
+    expires_at: Optional[str] = None
+    message: Optional[str] = None

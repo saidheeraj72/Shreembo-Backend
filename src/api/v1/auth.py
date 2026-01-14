@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from uuid import UUID
 
-from src.models.auth import LoginRequest, LoginResponse, SignupRequest, SignupResponse, AcceptInvitationRequest
+from src.models.auth import LoginRequest, LoginResponse, SignupRequest, SignupResponse, AcceptInvitationRequest, VerifyInviteResponse
 from src.models.user import UserWithPermissions
 from src.services.auth_service import auth_service
 from src.core.dependencies import get_current_user, get_current_org_context, get_client_ip, get_user_agent, get_current_user_optional
@@ -106,6 +106,21 @@ async def logout(
         "success": True,
         "message": "Logged out successfully",
     }
+
+
+@router.get("/verify-invite/{token}", response_model=VerifyInviteResponse)
+async def verify_invite(token: str):
+    """
+    Verify an invitation token and check if the user already exists.
+    
+    This endpoint is used by the frontend to determine whether to:
+    - Show a signup form (if user doesn't exist)
+    - Redirect to login (if user already has an account)
+    
+    Returns invitation details including organization name and whether user exists.
+    """
+    result = await auth_service.verify_invitation(token)
+    return VerifyInviteResponse(**result)
 
 
 @router.post("/accept-invite", response_model=LoginResponse)

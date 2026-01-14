@@ -72,14 +72,11 @@ class Settings(BaseSettings):
     CACHE_ENABLED: bool = True
     CACHE_TTL: int = 300  # 5 minutes
 
-    # Email (SMTP)
-    SMTP_HOST: str = "smtp.gmail.com"
-    SMTP_PORT: int = 587
-    SMTP_USER: Optional[str] = "saidheeraj985@gmail.com"
-    SMTP_PASSWORD: Optional[str] = "Sai@17895"
-    SMTP_FROM_EMAIL: Optional[str] = "saidheeraj985@gmail.com"
-    SMTP_FROM_NAME: str = "Enterprise DMS"
-    SMTP_ENABLED: bool = True
+    # Email (Resend)
+    RESEND_API_KEY: Optional[str] = None
+    RESEND_FROM_EMAIL: str = "noreply@shreembo.com"
+    RESEND_FROM_NAME: str = "Shreembo"
+    EMAIL_ENABLED: bool = True
 
     # Frontend
     FRONTEND_URL: str = "http://localhost:5173"

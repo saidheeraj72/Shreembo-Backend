@@ -1,6 +1,7 @@
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+"""
+Email service using Resend for sending transactional emails.
+"""
+import resend
 from typing import Optional
 import logging
 
@@ -8,69 +9,110 @@ from src.config import settings
 
 logger = logging.getLogger(__name__)
 
+
 class EmailService:
+    def __init__(self):
+        if settings.RESEND_API_KEY:
+            resend.api_key = settings.RESEND_API_KEY
+
     def send_email(self, to_email: str, subject: str, html_content: str):
-        if not settings.SMTP_ENABLED:
-            logger.warning("SMTP is disabled. Email not sent.")
+        if not settings.EMAIL_ENABLED:
+            logger.warning("Email is disabled. Email not sent.")
+            return
+
+        if not settings.RESEND_API_KEY:
+            logger.warning("RESEND_API_KEY not configured. Email not sent.")
             return
 
         try:
-            message = MIMEMultipart("alternative")
-            message["Subject"] = subject
-            message["From"] = f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL or settings.SMTP_USER}>"
-            message["To"] = to_email
+            params = {
+                "from": f"{settings.RESEND_FROM_NAME} <{settings.RESEND_FROM_EMAIL}>",
+                "to": [to_email],
+                "subject": subject,
+                "html": html_content,
+            }
 
-            part = MIMEText(html_content, "html")
-            message.attach(part)
-
-            # Connect to SMTP server
-            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:
-                server.starttls()
-                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-                server.sendmail(
-                    settings.SMTP_FROM_EMAIL or settings.SMTP_USER,
-                    to_email,
-                    message.as_string()
-                )
-            
-            logger.info(f"Email sent successfully to {to_email}")
+            email = resend.Emails.send(params)
+            logger.info(f"Email sent successfully to {to_email}, id: {email.get('id')}")
+            return email
 
         except Exception as e:
             logger.error(f"Failed to send email to {to_email}: {str(e)}")
-            # Don't raise exception to avoid breaking the calling flow, but log it error
-            # In production, we might want to retry or raise.
+            # Don't raise exception to avoid breaking the calling flow
 
-    def send_invitation_email(self, to_email: str, invite_token: str, inviter_name: str, org_name: str, message: Optional[str] = None):
+    def send_invitation_email(
+        self,
+        to_email: str,
+        invite_token: str,
+        inviter_name: str,
+        org_name: str,
+        message: Optional[str] = None,
+    ):
         invite_link = f"{settings.FRONTEND_URL}/accept-invite/{invite_token}"
-        
+
         # Log the link for development/debugging purposes
         logger.info(f"🔗 GENERATED INVITE LINK: {invite_link}")
-        
+
         subject = f"Invitation to join {org_name} on {settings.PROJECT_NAME}"
-        
+
         html_content = f"""
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-            <h2>You've been invited!</h2>
-            <p><strong>{inviter_name}</strong> has invited you to join <strong>{org_name}</strong> on {settings.PROJECT_NAME}.</p>
-            
-            {f'<p><em>"{message}"</em></p>' if message else ''}
-            
-            <p>Click the button below to accept the invitation and set up your account:</p>
-            
-            <div style="text-align: center; margin: 30px 0;">
-                <a href="{invite_link}" style="background-color: #007bff; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; font-weight: bold;">Accept Invitation</a>
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9fafb;">
+            <div style="background-color: white; border-radius: 12px; padding: 40px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                <div style="text-align: center; margin-bottom: 30px;">
+                    <div style="display: inline-block; background-color: #4f46e5; padding: 12px; border-radius: 12px;">
+                        <span style="color: white; font-size: 24px; font-weight: bold;">S</span>
+                    </div>
+                </div>
+                
+                <h1 style="font-size: 24px; font-weight: 600; color: #111827; margin-bottom: 16px; text-align: center;">
+                    You've been invited!
+                </h1>
+                
+                <p style="color: #374151; font-size: 16px; line-height: 24px; margin-bottom: 24px;">
+                    <strong>{inviter_name}</strong> has invited you to join <strong>{org_name}</strong> on {settings.PROJECT_NAME}.
+                </p>
+                
+                {f'<div style="background-color: #f3f4f6; border-left: 4px solid #4f46e5; padding: 16px; margin-bottom: 24px; border-radius: 4px;"><p style="color: #374151; margin: 0; font-style: italic;">"{message}"</p></div>' if message else ''}
+                
+                <p style="color: #374151; font-size: 16px; line-height: 24px; margin-bottom: 24px;">
+                    Click the button below to accept the invitation and set up your account:
+                </p>
+                
+                <div style="text-align: center; margin: 32px 0;">
+                    <a href="{invite_link}" style="display: inline-block; background-color: #4f46e5; color: white; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px;">
+                        Accept Invitation
+                    </a>
+                </div>
+                
+                <p style="color: #6b7280; font-size: 14px; margin-bottom: 8px;">
+                    Or copy and paste this link into your browser:
+                </p>
+                <p style="word-break: break-all; color: #4f46e5; font-size: 14px; margin-bottom: 24px;">
+                    <a href="{invite_link}" style="color: #4f46e5;">{invite_link}</a>
+                </p>
+                
+                <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 32px 0;">
+                
+                <p style="color: #9ca3af; font-size: 12px; text-align: center;">
+                    This invitation will expire in {settings.INVITATION_EXPIRY_DAYS} days.<br>
+                    If you didn't expect this invitation, you can safely ignore this email.
+                </p>
             </div>
             
-            <p>Or copy and paste this link into your browser:</p>
-            <p><a href="{invite_link}">{invite_link}</a></p>
-            
-            <p>This link will expire in {settings.INVITATION_EXPIRY_DAYS} days.</p>
-            
-            <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
-            <p style="color: #666; font-size: 12px;">If you didn't expect this invitation, you can ignore this email.</p>
-        </div>
+            <p style="color: #9ca3af; font-size: 12px; text-align: center; margin-top: 24px;">
+                © 2026 {settings.PROJECT_NAME}. All rights reserved.
+            </p>
+        </body>
+        </html>
         """
-        
+
         self.send_email(to_email, subject, html_content)
+
 
 email_service = EmailService()
