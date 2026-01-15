@@ -47,6 +47,7 @@ class EmailService:
         inviter_name: str,
         org_name: str,
         message: Optional[str] = None,
+        user_exists: bool = False,
     ):
         invite_link = f"{settings.FRONTEND_URL}/accept-invite/{invite_token}"
 
@@ -54,6 +55,14 @@ class EmailService:
         logger.info(f"🔗 GENERATED INVITE LINK: {invite_link}")
 
         subject = f"Invitation to join {org_name} on {settings.PROJECT_NAME}"
+
+        # Customize messaging based on whether user already has an account
+        if user_exists:
+            action_text = "Sign in to accept the invitation and join the organization:"
+            button_text = "Sign In & Accept"
+        else:
+            action_text = "Click the button below to create your account and join the organization:"
+            button_text = "Accept Invitation"
 
         html_content = f"""
         <!DOCTYPE html>
@@ -81,12 +90,12 @@ class EmailService:
                 {f'<div style="background-color: #f3f4f6; border-left: 4px solid #4f46e5; padding: 16px; margin-bottom: 24px; border-radius: 4px;"><p style="color: #374151; margin: 0; font-style: italic;">"{message}"</p></div>' if message else ''}
                 
                 <p style="color: #374151; font-size: 16px; line-height: 24px; margin-bottom: 24px;">
-                    Click the button below to accept the invitation and set up your account:
+                    {action_text}
                 </p>
                 
                 <div style="text-align: center; margin: 32px 0;">
                     <a href="{invite_link}" style="display: inline-block; background-color: #4f46e5; color: white; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px;">
-                        Accept Invitation
+                        {button_text}
                     </a>
                 </div>
                 
