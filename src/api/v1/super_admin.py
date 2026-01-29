@@ -589,6 +589,16 @@ async def approve_organization_request(
     )
     print(f"   ✅ Audit log created")
 
+    # Send organization approval email
+    print(f"\n8️⃣ Sending organization approval email...")
+    from src.services.email_service import email_service
+    email_service.send_organization_approved_email(
+        to_email=request_data["user_email"],
+        user_name=request_data["user_full_name"],
+        org_name=request_data["org_name"],
+    )
+    print(f"   ✅ Organization approval email sent")
+
     response_data = {
         "message": "Organization request approved",
         "organization_id": org_id,

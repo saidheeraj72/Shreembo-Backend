@@ -238,6 +238,10 @@ class AuthService:
             user_agent=user_agent,
         )
 
+        # Send welcome email
+        from src.services.email_service import email_service
+        email_service.send_welcome_email(email, full_name)
+
         return profile_response.data
 
     @staticmethod
