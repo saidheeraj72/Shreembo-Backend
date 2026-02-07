@@ -10,6 +10,14 @@ from src.core.exceptions import NotFoundError, AuthorizationError
 class ChatService:
     """Service for chat session and message CRUD operations."""
 
+    @staticmethod
+    def _sanitize_text(text: str) -> str:
+        """Remove null characters that PostgreSQL cannot store in text columns."""
+        if text is None:
+            return text
+        # Remove null bytes (\u0000) which cause PostgreSQL error 22P05
+        return text.replace('\x00', '')
+
     # ============== Session Operations ==============
 
     @staticmethod
@@ -167,10 +175,13 @@ class ChatService:
         total_tokens: int = 0
     ) -> dict:
         """Add a message to a chat session."""
+        # Sanitize content to remove null characters (PostgreSQL doesn't support \u0000)
+        sanitized_content = ChatService._sanitize_text(content)
+        
         data = {
             "session_id": str(session_id),
             "role": role,
-            "content": content,
+            "content": sanitized_content,
             "attachments": attachments,
             "rag_context": rag_context,
             "web_search_results": web_search_results,
