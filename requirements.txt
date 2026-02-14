@@ -1,12 +1,11 @@
 fastapi
 uvicorn[standard]
-pydantic
+pydantic[email]
 pydantic-settings
 python-multipart
 supabase
 httpx
 pytest
-pydantic[email]
 
 # Redis
 redis
@@ -31,9 +30,6 @@ markitdown[pdf]
 
 # WebSocket
 websockets
-
-# Background Tasks
-celery
 
 # Async File Handling
 aiofiles
