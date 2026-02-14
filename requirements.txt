@@ -40,3 +40,5 @@ aiofiles
 
 # File Type Detection
 python-magic
+
+resend
