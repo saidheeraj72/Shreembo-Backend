@@ -1,6 +1,9 @@
 """Pinecone client for vector embeddings."""
 from typing import List, Dict, Optional
+import logging
 from src.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class PineconeClient:
@@ -42,7 +45,7 @@ class PineconeClient:
             idx.upsert(vectors=vectors, namespace=namespace)
             return True
         except Exception as e:
-            print(f"Pinecone upsert error: {e}")
+            logger.error("Pinecone upsert error: %s", e)
             return False
 
     async def query(self, vector: List[float], namespace: str, top_k: int = 10,
@@ -55,7 +58,7 @@ class PineconeClient:
             )
             return results.matches
         except Exception as e:
-            print(f"Pinecone query error: {e}")
+            logger.error("Pinecone query error: %s", e)
             return []
 
     async def delete_by_document(self, document_id: str, namespace: str, index_name: Optional[str] = None) -> bool:
@@ -102,7 +105,7 @@ class PineconeClient:
 
             return True
         except Exception as e:
-            print(f"Pinecone copy error: {e}")
+            logger.error("Pinecone copy error: %s", e)
             return False
 
 

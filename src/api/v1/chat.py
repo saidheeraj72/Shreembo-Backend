@@ -2,7 +2,10 @@
 from typing import Optional, List
 from uuid import UUID
 from datetime import date
+import logging
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, Query, HTTPException, BackgroundTasks
+
+logger = logging.getLogger(__name__)
 
 from src.core.dependencies import get_current_user_id, get_current_org_context
 from src.core.chat_websocket import chat_ws_manager
@@ -462,5 +465,5 @@ async def chat_websocket(websocket: WebSocket):
     except WebSocketDisconnect:
         chat_ws_manager.disconnect(websocket)
     except Exception as e:
-        print(f"WebSocket error: {e}")
+        logger.error("WebSocket error: %s", e)
         chat_ws_manager.disconnect(websocket)

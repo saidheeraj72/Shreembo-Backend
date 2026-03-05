@@ -1,9 +1,12 @@
 """AWS S3 client for document storage."""
 import uuid
 from typing import Optional, BinaryIO
+import logging
 import boto3
 from botocore.config import Config
 from src.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class S3Client:
@@ -83,7 +86,7 @@ class S3Client:
             )
             return True
         except Exception as e:
-            print(f"S3 copy error: {e}")
+            logger.error("S3 copy error: %s", e)
             return False
 
     async def upload_file_bytes(self, file_bytes: bytes, key: str, content_type: str) -> dict:

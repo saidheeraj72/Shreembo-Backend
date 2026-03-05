@@ -3,10 +3,13 @@ import hashlib
 import re
 import tempfile
 import os
+import logging
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 
 from markitdown import MarkItDown
+
+logger = logging.getLogger(__name__)
 
 from src.core.s3 import s3_client
 from src.core.openai_client import openai_client
@@ -112,7 +115,7 @@ class EmbeddingService:
                     os.unlink(tmp_path)
 
         except Exception as e:
-            print(f"Text extraction error with MarkItDown: {e}")
+            logger.error("Text extraction error with MarkItDown: %s", e)
             return None
 
     @staticmethod
@@ -219,7 +222,7 @@ class EmbeddingService:
             await ws_manager.send_upload_progress(user_id, upload_id, "complete", 100, str(document_id))
 
         except Exception as e:
-            print(f"Embedding error: {e}")
+            logger.error("Embedding error: %s", e)
             if not is_session_document:
                 db.admin.table("storage_nodes").update({
                     "processing_status": "failed",

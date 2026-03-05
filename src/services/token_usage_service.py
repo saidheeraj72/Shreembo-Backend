@@ -2,8 +2,11 @@
 from typing import Optional, List
 from uuid import UUID
 from datetime import date, datetime
+import logging
 
 from src.core.database import db
+
+logger = logging.getLogger(__name__)
 
 
 class TokenUsageService:
@@ -70,7 +73,7 @@ class TokenUsageService:
                 data = None
             else:
                 # Re-raise other errors
-                print(f"Error fetching token usage: {e}")
+                logger.error("Error fetching token usage: %s", e)
                 raise e
 
         if data:

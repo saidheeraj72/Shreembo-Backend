@@ -1,11 +1,15 @@
 """
 Security utilities for authentication and authorization.
 """
+import json
+import logging
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
-from jose import JWTError, jwt
+from jose import JWTError, jwt, jwk
 from passlib.context import CryptContext
 from src.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 # Password hashing context
@@ -114,12 +118,32 @@ def decode_token(token: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _get_supabase_es256_key():
+    """Build the ES256 public key from the JWK in settings."""
+    if not settings.SUPABASE_JWT_JWK:
+        return None
+    try:
+        jwk_dict = json.loads(settings.SUPABASE_JWT_JWK)
+        return jwk.construct(jwk_dict, algorithm="ES256")
+    except Exception as e:
+        logger.error("Failed to construct ES256 key from JWK: %s", e)
+        return None
+
+
+# Cache the key at module level
+_es256_key = None
+
+
+def _get_es256_key():
+    global _es256_key
+    if _es256_key is None:
+        _es256_key = _get_supabase_es256_key()
+    return _es256_key
+
+
 def verify_supabase_jwt(token: str) -> Optional[Dict[str, Any]]:
     """
-    Verify Supabase JWT token.
-
-    For new Supabase projects using ECC keys, we verify without signature
-    validation and rely on Supabase's token generation security.
+    Verify Supabase JWT token using ES256 public key (JWK).
 
     Args:
         token: Supabase JWT token
@@ -127,21 +151,23 @@ def verify_supabase_jwt(token: str) -> Optional[Dict[str, Any]]:
     Returns:
         Decoded payload or None if invalid
     """
+    es256_key = _get_es256_key()
+    if not es256_key:
+        logger.error("SUPABASE_JWT_JWK not configured, cannot verify tokens")
+        return None
+
     try:
-        # For ECC-based JWTs from Supabase, decode without verification
-        # The token is already verified by Supabase during generation
         payload = jwt.decode(
             token,
-            key="",  # Empty key when not verifying signature
+            key=es256_key,
+            algorithms=["ES256"],
             options={
-                "verify_signature": False,  # Skip signature verification for ECC tokens
-                "verify_aud": False,  # Skip audience verification
-                "verify_exp": False,  # Skip expiration verification (we trust Supabase)
+                "verify_aud": False,
             }
         )
         return payload
     except JWTError as e:
-        print(f"JWT decode error: {e}")
+        logger.warning("JWT decode error: %s", e)
         return None
 
 

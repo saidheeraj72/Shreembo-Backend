@@ -12,6 +12,10 @@ from src.services.limit_service import limit_service
 from src.api.deps.permissions import require_super_admin
 from src.core.dependencies import get_current_user
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 
@@ -393,13 +397,10 @@ async def approve_organization_request(
     from datetime import datetime, timedelta
     from uuid import UUID
 
-    print("\n" + "="*80)
-    print("🔵 ORGANIZATION REQUEST APPROVAL STARTED")
-    print("="*80)
-    print(f"📥 Request ID received from frontend: {request_id}")
+    logger.info("Organization request approval started for request_id: %s", request_id)
 
     # Get the request
-    print(f"\n1️⃣ Fetching organization request from Supabase...")
+    logger.info("Step 1: Fetching organization request from database")
     request_response = (
         db.admin.table("organization_requests")
         .select("*")
@@ -408,23 +409,21 @@ async def approve_organization_request(
         .execute()
     )
 
-    print(f"   ✅ Supabase response received")
-    print(f"   📊 Request data: {request_response.data}")
+    logger.debug("Request data: %s", request_response.data)
 
     if not request_response.data:
-        print("   ❌ ERROR: Organization request not found in database")
+        logger.error("Organization request not found in database for request_id: %s", request_id)
         raise HTTPException(status_code=404, detail="Organization request not found")
 
     request_data = request_response.data
-    print(f"   ℹ️ Request details:")
-    print(f"      - User ID: {request_data['user_id']}")
-    print(f"      - User Email: {request_data['user_email']}")
-    print(f"      - User Name: {request_data['user_full_name']}")
-    print(f"      - Org Name: {request_data['org_name']}")
-    print(f"      - Current Status: {request_data['status']}")
+    logger.debug(
+        "Request details - user_id: %s, user_email: %s, user_name: %s, org_name: %s, status: %s",
+        request_data['user_id'], request_data['user_email'], request_data['user_full_name'],
+        request_data['org_name'], request_data['status']
+    )
 
     if request_data["status"] != "pending":
-        print(f"   ❌ ERROR: Request status is '{request_data['status']}', not 'pending'")
+        logger.error("Request status is '%s', expected 'pending' for request_id: %s", request_data['status'], request_id)
         raise HTTPException(
             status_code=400,
             detail=f"Request already {request_data['status']}"
@@ -438,7 +437,7 @@ async def approve_organization_request(
     user_email = request_data["user_email"]
     email_domain = user_email.split("@")[1] if "@" in user_email else None
 
-    print(f"   📧 Extracted domain from email: {email_domain}")
+    logger.debug("Extracted domain from email: %s", email_domain)
 
     org_data = {
         "name": request_data["org_name"],
@@ -451,26 +450,26 @@ async def approve_organization_request(
         "is_active": True,
     }
 
-    print(f"\n2️⃣ Creating organization in Supabase...")
-    print(f"   📤 Organization data to insert: {org_data}")
+    logger.info("Step 2: Creating organization '%s'", request_data["org_name"])
+    logger.debug("Organization data to insert: %s", org_data)
     org_response = db.admin.table("organizations").insert(org_data).execute()
 
-    print(f"   ✅ Supabase insert response: {org_response.data}")
+    logger.debug("Organization insert response: %s", org_response.data)
 
     if not org_response.data:
-        print("   ❌ ERROR: Failed to create organization")
+        logger.error("Failed to create organization for request_id: %s", request_id)
         raise HTTPException(status_code=500, detail="Failed to create organization")
 
     org_id = org_response.data[0]["id"]
-    print(f"   ✅ Organization created with ID: {org_id}")
+    logger.info("Organization created with ID: %s", org_id)
 
     # Create system roles for the organization
-    print(f"\n3️⃣ Creating system roles for organization...")
+    logger.info("Step 3: Creating system roles for organization %s", org_id)
 
     # Get all permissions to assign to owner role
     all_permissions_response = db.admin.table("permissions").select("id").execute()
     all_permission_ids = [p["id"] for p in all_permissions_response.data]
-    print(f"   📊 Found {len(all_permission_ids)} total permissions in system")
+    logger.debug("Found %d total permissions in system", len(all_permission_ids))
 
     # Create Owner role with all permissions
     owner_role_data = {
@@ -483,24 +482,24 @@ async def approve_organization_request(
         "priority": 1000,  # Highest priority
         "color": "#dc2626",  # Red color
     }
-    print(f"   📤 Creating Owner role: {owner_role_data}")
+    logger.debug("Creating Owner role: %s", owner_role_data)
     owner_role_response = db.admin.table("roles").insert(owner_role_data).execute()
 
     if not owner_role_response.data:
-        print("   ❌ ERROR: Failed to create Owner role")
+        logger.error("Failed to create Owner role for organization %s", org_id)
         raise HTTPException(status_code=500, detail="Failed to create Owner role")
 
     owner_role_id = owner_role_response.data[0]["id"]
-    print(f"   ✅ Owner role created with ID: {owner_role_id}")
+    logger.info("Owner role created with ID: %s", owner_role_id)
 
     # Assign all permissions to Owner role
-    print(f"   🔐 Assigning all {len(all_permission_ids)} permissions to Owner role...")
+    logger.info("Assigning all %d permissions to Owner role", len(all_permission_ids))
     role_permissions = [
         {"role_id": owner_role_id, "permission_id": perm_id}
         for perm_id in all_permission_ids
     ]
     db.admin.table("role_permissions").insert(role_permissions).execute()
-    print(f"   ✅ All permissions assigned to Owner role")
+    logger.info("All permissions assigned to Owner role")
 
     # Create Admin role (subset of permissions)
     admin_role_data = {
@@ -514,7 +513,7 @@ async def approve_organization_request(
         "color": "#f59e0b",  # Orange color
     }
     db.admin.table("roles").insert(admin_role_data).execute()
-    print(f"   ✅ Admin role created")
+    logger.info("Admin role created")
 
     # Create Member role (basic permissions)
     member_role_data = {
@@ -528,10 +527,10 @@ async def approve_organization_request(
         "color": "#3b82f6",  # Blue color
     }
     db.admin.table("roles").insert(member_role_data).execute()
-    print(f"   ✅ Member role created")
+    logger.info("Member role created")
 
     # Add user to organization_members with Owner role
-    print(f"\n4️⃣ Adding user to organization_members table...")
+    logger.info("Step 4: Adding user %s to organization_members", request_data["user_id"])
     member_data = {
         "org_id": org_id,
         "user_id": request_data["user_id"],
@@ -540,40 +539,38 @@ async def approve_organization_request(
         "title": "Owner",
         "joined_at": datetime.utcnow().isoformat(),
     }
-    print(f"   📤 Organization member data: {member_data}")
+    logger.debug("Organization member data: %s", member_data)
     member_response = db.admin.table("organization_members").insert(member_data).execute()
 
     if not member_response.data:
-        print("   ❌ ERROR: Failed to add user to organization_members")
+        logger.error("Failed to add user to organization_members for org %s", org_id)
         raise HTTPException(status_code=500, detail="Failed to add user as organization member")
 
-    print(f"   ✅ User added to organization_members with Owner role")
+    logger.info("User added to organization_members with Owner role")
 
     # Update user profile to link to org and activate
-    print(f"\n5️⃣ Updating user profile in Supabase...")
+    logger.info("Step 5: Updating user profile for user_id: %s", request_data['user_id'])
     profile_update = {
         "org_id": org_id,
         "status": "active",
     }
-    print(f"   📤 Profile update data: {profile_update}")
-    print(f"   🔍 Updating profile for user_id: {request_data['user_id']}")
+    logger.debug("Profile update data: %s", profile_update)
 
     profile_response = db.admin.table("profiles").update(profile_update).eq("id", request_data["user_id"]).execute()
-    print(f"   ✅ Profile updated: {profile_response.data}")
+    logger.debug("Profile updated: %s", profile_response.data)
 
     # Update request status
-    print(f"\n6️⃣ Updating request status in Supabase...")
+    logger.info("Step 6: Updating request status to approved")
     request_update = {
         "status": "approved",
         "reviewed_at": datetime.utcnow().isoformat(),
     }
-    print(f"   📤 Request update data: {request_update}")
 
     request_update_response = db.admin.table("organization_requests").update(request_update).eq("id", request_id).execute()
-    print(f"   ✅ Request status updated: {request_update_response.data}")
+    logger.debug("Request status updated: %s", request_update_response.data)
 
     # Log the approval
-    print(f"\n7️⃣ Creating audit log...")
+    logger.info("Step 7: Creating audit log")
     from src.services.audit_service import audit_service
     from src.models.audit import AuditAction
 
@@ -587,17 +584,17 @@ async def approve_organization_request(
         resource_id=UUID(org_id),
         description=f"Organization created: {request_data['org_name']}",
     )
-    print(f"   ✅ Audit log created")
+    logger.info("Audit log created")
 
     # Send organization approval email
-    print(f"\n8️⃣ Sending organization approval email...")
+    logger.info("Step 8: Sending organization approval email to %s", request_data["user_email"])
     from src.services.email_service import email_service
     email_service.send_organization_approved_email(
         to_email=request_data["user_email"],
         user_name=request_data["user_full_name"],
         org_name=request_data["org_name"],
     )
-    print(f"   ✅ Organization approval email sent")
+    logger.info("Organization approval email sent")
 
     response_data = {
         "message": "Organization request approved",
@@ -605,10 +602,7 @@ async def approve_organization_request(
         "organization_name": request_data["org_name"],
     }
 
-    print(f"\n📤 Sending response to frontend: {response_data}")
-    print("="*80)
-    print("✅ ORGANIZATION REQUEST APPROVAL COMPLETED")
-    print("="*80 + "\n")
+    logger.info("Organization request approval completed for request_id: %s, org_id: %s", request_id, org_id)
 
     return response_data
 

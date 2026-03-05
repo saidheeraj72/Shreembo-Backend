@@ -404,7 +404,7 @@ class SessionDocumentService:
                 try:
                     await s3_client.delete_file(s3_key)
                 except Exception as e:
-                    print(f"Failed to delete S3 file {s3_key}: {e}")
+                    logger.error("Failed to delete S3 file %s: %s", s3_key, e)
 
         return bool(result.data)
 
@@ -646,7 +646,7 @@ class SessionDocumentService:
                     try:
                         await s3_client.delete_file(s3_key)
                     except Exception as e:
-                        print(f"Failed to delete S3 file {s3_key}: {e}")
+                        logger.error("Failed to delete S3 file %s: %s", s3_key, e)
 
         # Delete all session_documents entries
         result = db.admin.table("session_documents").delete().eq(

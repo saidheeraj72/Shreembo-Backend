@@ -2,12 +2,15 @@
 import asyncio
 import zipfile
 import mimetypes
+import logging
 from typing import Optional, List, Dict, Any
 from uuid import UUID, uuid4
 from datetime import datetime
 from io import BytesIO
 
 from src.core.database import db
+
+logger = logging.getLogger(__name__)
 from src.core.s3 import s3_client
 from src.core.websocket import ws_manager
 from src.services.embedding_service import embedding_service
@@ -218,7 +221,7 @@ class DocumentService:
             # This is expected for "Not Found"
             error_str = str(e)
             if "406" not in error_str and "'code': '204'" not in error_str:
-                print(f"Error fetching document with org filter: {e}")
+                logger.error("Error fetching document with org filter: %s", e)
             # Fallback: try without org_id filter
             pass
 
@@ -231,7 +234,7 @@ class DocumentService:
         except Exception as e:
             error_str = str(e)
             if "406" not in error_str and "'code': '204'" not in error_str:
-                print(f"Error fetching document: {e}")
+                logger.error("Error fetching document: %s", e)
             return None
 
     @staticmethod
