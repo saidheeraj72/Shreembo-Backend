@@ -1,5 +1,4 @@
 """Embedding service for document processing."""
-import hashlib
 import re
 import tempfile
 import os
@@ -9,14 +8,15 @@ from uuid import UUID
 
 from markitdown import MarkItDown
 
-logger = logging.getLogger(__name__)
-
 from src.core.s3 import s3_client
 from src.core.openai_client import openai_client
 from src.core.pinecone_client import pinecone_client
 from src.core.websocket import ws_manager
 from src.core.database import db
 from src.config import settings
+from src.utils.text_utils import sanitize_text
+
+logger = logging.getLogger(__name__)
 
 
 class RecursiveHeaderChunker:
@@ -24,37 +24,31 @@ class RecursiveHeaderChunker:
     Splits markdown by headers (Level 1-3) to preserve logical structure.
     If a section is too large, it sub-splits by paragraphs.
     """
+
     def __init__(self, max_chunk_size=800, overlap=100):
         self.max_chunk_size = max_chunk_size
         self.overlap = overlap
 
     def split_text(self, text: str) -> List[Dict[str, Any]]:
-        # Regex to match headers like "# Title" or "### Section"
-        # We use a capture group to keep the delimiter for reconstruction
-        # This splits the text into [content, header, content, header...]
         header_pattern = r'(^#{1,3}\s+.*)'
         parts = re.split(header_pattern, text, flags=re.MULTILINE)
 
         chunks = []
         current_header = "General"
 
-        # 'parts' will look like: ['', '# Header 1', 'Content...', '## Header 2', 'Content...']
-        # We iterate and group them.
         for part in parts:
             part = part.strip()
             if not part:
                 continue
 
-            # If it's a header, update current context
             if re.match(r'^#{1,3}\s+', part):
                 current_header = part
             else:
-                # It's content. If too big, sub-split.
                 if len(part) > self.max_chunk_size:
                     sub_chunks = self._sub_split_paragraph(part)
                     for sub in sub_chunks:
                         chunks.append({
-                            "text": f"{current_header}\n\n{sub}", # Inject context
+                            "text": f"{current_header}\n\n{sub}",
                             "metadata": {"header": current_header}
                         })
                 else:
@@ -65,9 +59,8 @@ class RecursiveHeaderChunker:
         return chunks
 
     def _sub_split_paragraph(self, text: str) -> List[str]:
-        """Simple fallback: split by double newline (paragraphs)"""
+        """Split by double newline (paragraphs) and combine until max_chunk_size."""
         paragraphs = text.split("\n\n")
-        # Combine paragraphs until max_chunk_size is reached (simple logic)
         current_chunk = []
         current_len = 0
         final_chunks = []
@@ -87,54 +80,88 @@ class RecursiveHeaderChunker:
 
 
 class EmbeddingService:
-    """Service for document processing with MarkItDown parser and RecursiveHeaderChunker."""
+    """Service for document processing and embedding generation."""
 
-    # Initialize MarkItDown parser
     md_parser = MarkItDown()
+
+    # --- Text Extraction ---
+
+    @staticmethod
+    def _extract_pdf_with_pymupdf(file_bytes: bytes) -> Optional[str]:
+        """Extract text from PDF using PyMuPDF for better accuracy."""
+        try:
+            import pymupdf
+            doc = pymupdf.open(stream=file_bytes, filetype="pdf")
+            pages = [page.get_text() for page in doc]
+            doc.close()
+            text = "\n\n".join(pages)
+            return text if text.strip() else None
+        except Exception as e:
+            logger.warning("PyMuPDF extraction failed: %s", e)
+            return None
+
+    @staticmethod
+    def _extract_with_markitdown(file_bytes: bytes, file_type: str) -> Optional[str]:
+        """Extract text using MarkItDown (supports PDF, DOCX, XLSX, PPTX, etc.)."""
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_type}') as tmp_file:
+                tmp_file.write(file_bytes)
+                tmp_path = tmp_file.name
+            try:
+                result = EmbeddingService.md_parser.convert(tmp_path)
+                return result.text_content
+            finally:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+        except Exception as e:
+            logger.error("MarkItDown extraction error: %s", e)
+            return None
 
     @staticmethod
     async def extract_text(s3_key: str, file_type: str) -> Optional[str]:
-        """Extract text from document using MarkItDown parser."""
+        """
+        Extract text from a document.
+        Uses PyMuPDF for PDFs (better accuracy), falls back to MarkItDown.
+        Uses MarkItDown directly for all other file types.
+        """
         content = await s3_client.get_file_content(s3_key)
         if not content:
             return None
 
-        try:
-            # Save content to temporary file for MarkItDown processing
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{file_type}') as tmp_file:
-                tmp_file.write(content)
-                tmp_path = tmp_file.name
+        text = None
+        if file_type == "pdf":
+            text = EmbeddingService._extract_pdf_with_pymupdf(content)
+            if text:
+                return sanitize_text(text)
+            logger.info("PyMuPDF returned no text, falling back to MarkItDown for PDF")
 
-            try:
-                # Use MarkItDown to convert file to markdown
-                result = EmbeddingService.md_parser.convert(tmp_path)
-                return result.text_content
-            finally:
-                # Clean up temp file
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
+        text = EmbeddingService._extract_with_markitdown(content, file_type)
+        return sanitize_text(text) if text else None
 
-        except Exception as e:
-            logger.error("Text extraction error with MarkItDown: %s", e)
-            return None
+    # --- Chunking ---
 
     @staticmethod
     def chunk_text(text: str) -> List[str]:
         """Split text into chunks using RecursiveHeaderChunker to preserve document structure."""
         chunker = RecursiveHeaderChunker(max_chunk_size=1500, overlap=100)
         chunks_with_metadata = chunker.split_text(text)
-
-        # Return just the text parts for backward compatibility
         return [chunk['text'] for chunk in chunks_with_metadata]
 
+    # --- Document Processing ---
+
     @staticmethod
-    async def process_document(document_id: UUID, org_id: Optional[UUID], s3_key: str,
-                               file_type: str, user_id: str, upload_id: str,
-                               is_session_document: bool = False,
-                               session_id: Optional[str] = None):
-        """Process document: extract text and generate embeddings."""
+    async def process_document(
+        document_id: UUID,
+        org_id: Optional[UUID],
+        s3_key: str,
+        file_type: str,
+        user_id: str,
+        upload_id: str,
+        is_session_document: bool = False,
+        session_id: Optional[str] = None,
+    ):
+        """Process document: extract text, chunk, generate embeddings, store in Pinecone."""
         try:
-            # Update status (only for storage_nodes, not session documents)
             if not is_session_document:
                 db.admin.table("storage_nodes").update({
                     "processing_status": "processing"
@@ -142,7 +169,7 @@ class EmbeddingService:
 
             await ws_manager.send_upload_progress(user_id, upload_id, "extracting", 40)
 
-            # Check if embeddings are enabled and file type is supported
+            # Skip if embeddings disabled or unsupported file type
             if not settings.ENABLE_EMBEDDINGS or file_type not in settings.SUPPORTED_EMBEDDING_TYPES:
                 if not is_session_document:
                     db.admin.table("storage_nodes").update({
@@ -161,32 +188,28 @@ class EmbeddingService:
                         "embedding_status": "failed"
                     }).eq("id", str(document_id)).execute()
                 await ws_manager.send_upload_progress(user_id, upload_id, "complete", 100, str(document_id))
-                
+
                 if is_session_document:
                     raise ValueError("Text extraction failed")
                 return
 
             await ws_manager.send_upload_progress(user_id, upload_id, "generating_embeddings", 60)
 
-            # Chunk text
+            # Chunk and embed
             chunks = EmbeddingService.chunk_text(text)
-
-            # Generate embeddings
             embeddings = await openai_client.get_embeddings_batch(chunks)
 
             await ws_manager.send_upload_progress(user_id, upload_id, "storing_embeddings", 80)
 
-            # Determine index and namespace based on document type
+            # Determine Pinecone index and namespace
             if is_session_document:
-                # Session documents: use chat-sessions index with user_id as namespace
                 index_name = settings.PINECONE_CHAT_SESSIONS_INDEX
                 pinecone_namespace = user_id
             else:
-                # Regular documents: use main index with org_id or user_id as namespace
-                index_name = None  # Default main index
+                index_name = None
                 pinecone_namespace = str(org_id) if org_id else user_id
 
-            # Prepare vectors for Pinecone - include session_id for session documents
+            # Build vectors
             vectors = []
             for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
                 metadata = {
@@ -195,7 +218,6 @@ class EmbeddingService:
                     'chunk_index': i,
                     'chunk_text': chunk,
                 }
-                # Add session_id for session documents (enables session-specific retrieval)
                 if is_session_document and session_id:
                     metadata['session_id'] = session_id
 
@@ -205,14 +227,11 @@ class EmbeddingService:
                     'metadata': metadata
                 })
 
-            # Store in Pinecone with batching (Pinecone has 2MB limit per request)
-            # Batch size of 50 vectors to stay well under 2MB limit
+            # Upsert in batches (Pinecone 2MB limit per request)
             batch_size = 50
             for i in range(0, len(vectors), batch_size):
-                batch = vectors[i:i + batch_size]
-                await pinecone_client.upsert(batch, pinecone_namespace, index_name)
+                await pinecone_client.upsert(vectors[i:i + batch_size], pinecone_namespace, index_name)
 
-            # Update document status (only for storage_nodes, not session documents)
             if not is_session_document:
                 db.admin.table("storage_nodes").update({
                     "processing_status": "completed",
@@ -231,23 +250,24 @@ class EmbeddingService:
             await ws_manager.send_upload_progress(user_id, upload_id, "failed", 0, error=str(e))
             raise
 
+    # --- Search ---
+
     @staticmethod
-    async def search(query: str, org_id: Optional[UUID], user_id: UUID, top_k: int = 10,
-                     folder_id: Optional[UUID] = None) -> List[dict]:
+    async def search(
+        query: str,
+        org_id: Optional[UUID],
+        user_id: UUID,
+        top_k: int = 10,
+        folder_id: Optional[UUID] = None,
+    ) -> List[dict]:
         """Search documents using vector similarity."""
-        # Get query embedding
         query_embedding = await openai_client.get_embedding(query)
 
-        # Build filter
-        filter_dict = None
-        if folder_id:
-            filter_dict = {'folder_id': str(folder_id)}
+        filter_dict = {'folder_id': str(folder_id)} if folder_id else None
+        pinecone_namespace = str(org_id) if org_id else str(user_id)
 
-        pinecone_namespace = str(org_id) if org_id else str(user_id) # Consistent namespace
-        # Query Pinecone
         results = await pinecone_client.query(query_embedding, pinecone_namespace, top_k, filter_dict)
 
-        # Get document details
         doc_ids = list(set(r.metadata.get('document_id') for r in results if r.metadata))
         if not doc_ids:
             return []
