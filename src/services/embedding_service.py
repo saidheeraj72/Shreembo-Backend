@@ -88,16 +88,16 @@ class EmbeddingService:
 
     @staticmethod
     def _extract_pdf_with_pymupdf(file_bytes: bytes) -> Optional[str]:
-        """Extract text from PDF using PyMuPDF for better accuracy."""
+        """Convert PDF to markdown using pymupdf4llm for structured output."""
         try:
+            import pymupdf4llm
             import pymupdf
             doc = pymupdf.open(stream=file_bytes, filetype="pdf")
-            pages = [page.get_text() for page in doc]
+            md_text = pymupdf4llm.to_markdown(doc)
             doc.close()
-            text = "\n\n".join(pages)
-            return text if text.strip() else None
+            return md_text if md_text.strip() else None
         except Exception as e:
-            logger.warning("PyMuPDF extraction failed: %s", e)
+            logger.warning("PyMuPDF markdown conversion failed: %s", e)
             return None
 
     @staticmethod
@@ -121,21 +121,18 @@ class EmbeddingService:
     async def extract_text(s3_key: str, file_type: str) -> Optional[str]:
         """
         Extract text from a document.
-        Uses PyMuPDF for PDFs (better accuracy), falls back to MarkItDown.
-        Uses MarkItDown directly for all other file types.
+        PDFs: Uses pymupdf4llm for markdown conversion.
+        Other formats: Uses MarkItDown.
         """
         content = await s3_client.get_file_content(s3_key)
         if not content:
             return None
 
-        text = None
         if file_type == "pdf":
             text = EmbeddingService._extract_pdf_with_pymupdf(content)
-            if text:
-                return sanitize_text(text)
-            logger.info("PyMuPDF returned no text, falling back to MarkItDown for PDF")
+        else:
+            text = EmbeddingService._extract_with_markitdown(content, file_type)
 
-        text = EmbeddingService._extract_with_markitdown(content, file_type)
         return sanitize_text(text) if text else None
 
     # --- Chunking ---

@@ -28,6 +28,7 @@ openai
 markitdown  # Universal document parser (handles PDF, DOCX, XLSX, PPTX, etc.)
 markitdown[pdf]
 pymupdf  # PDF text extraction (primary for PDFs)
+pymupdf4llm  # PDF to markdown conversion
 
 # WebSocket
 websockets

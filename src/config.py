@@ -82,12 +82,6 @@ class Settings(BaseSettings):
     # Frontend
     FRONTEND_URL: str = "http://localhost:5173"
 
-    # Security
-    SECRET_KEY: str = Field(default="change-this-in-production-secret-key-min-32-chars")
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
-    ALGORITHM: str = "HS256"
-
     # File Upload
     MAX_FILE_SIZE_MB: int = 100
     ALLOWED_FILE_TYPES: List[str] = Field(

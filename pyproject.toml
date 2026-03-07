@@ -26,4 +26,5 @@ dependencies = [
     "python-magic",
     "resend",
     "pymupdf",
+    "pymupdf4llm",
 ]

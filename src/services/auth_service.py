@@ -6,7 +6,6 @@ from typing import Optional, Dict
 from uuid import UUID
 
 from src.core.database import db
-from src.core.security import create_access_token, create_refresh_token, get_password_hash
 from src.core.exceptions import AuthenticationError, ConflictError
 from src.services.audit_service import audit_service
 from src.models.audit import AuditAction
@@ -467,18 +466,7 @@ class AuthService:
                 "accepted_by": user_id
             }).eq("id", invitation["id"]).execute()
             
-            # Return current session tokens (we don't have them here, so we might need to regenerate or assume client has them)
-            # BUT the return type expects tokens.
-            # Since user is already logged in, the client actually has tokens.
-            # However, to be consistent, we can generate new tokens or just return dummy/refreshed ones.
-            # Ideally, we call login() but we don't have the password.
-            # Supabase session management is tricky here if we don't have the session object.
-            # We can create a custom token using `create_access_token` if we were managing it fully custom.
-            # But we rely on Supabase Auth.
-            # Workaround: Return empty tokens and let client keep using existing ones?
-            # Or better: The client refetches 'me' after this call.
-            # We'll return dummy tokens and the updated user object.
-            
+            # Client keeps using existing tokens; return empty tokens with updated user
             # Refresh user profile
             updated_profile = (
                 db.admin.table("profiles")
