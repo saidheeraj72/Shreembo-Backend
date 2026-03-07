@@ -3,8 +3,11 @@ from datetime import datetime, timedelta, date
 from typing import Optional, Dict, List
 from uuid import UUID
 import math
+import logging
 
 from src.core.database import db
+
+logger = logging.getLogger(__name__)
 from src.models.limits import (
     UsageLimit,
     UsageLimitCreate,
@@ -105,7 +108,7 @@ class LimitService:
                 limits.append(limit)
             except Exception as e:
                 # Limit already exists, skip
-                print(f"Limit already exists for {entity_type}:{entity_id}:{limit_type}: {e}")
+                logger.debug("Limit already exists for %s:%s:%s: %s", entity_type, entity_id, limit_type, e)
 
         return limits
 

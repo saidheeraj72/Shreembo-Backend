@@ -2,9 +2,12 @@
 Redis cache management.
 """
 import json
+import logging
 from typing import Any, Optional
 import redis.asyncio as redis
 from src.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class CacheClient:
@@ -50,7 +53,7 @@ class CacheClient:
             if value:
                 return json.loads(value)
         except Exception as e:
-            print(f"Cache get error: {e}")
+            logger.error("Cache get error: %s", e)
         return None
 
     async def set(
@@ -79,7 +82,7 @@ class CacheClient:
             await self._client.setex(key, ttl, serialized)
             return True
         except Exception as e:
-            print(f"Cache set error: {e}")
+            logger.error("Cache set error: %s", e)
             return False
 
     async def delete(self, key: str) -> bool:
@@ -99,7 +102,7 @@ class CacheClient:
             await self._client.delete(key)
             return True
         except Exception as e:
-            print(f"Cache delete error: {e}")
+            logger.error("Cache delete error: %s", e)
             return False
 
     async def delete_pattern(self, pattern: str) -> int:
@@ -124,7 +127,7 @@ class CacheClient:
                 return await self._client.delete(*keys)
             return 0
         except Exception as e:
-            print(f"Cache delete pattern error: {e}")
+            logger.error("Cache delete pattern error: %s", e)
             return 0
 
     async def exists(self, key: str) -> bool:
@@ -143,7 +146,7 @@ class CacheClient:
         try:
             return await self._client.exists(key) > 0
         except Exception as e:
-            print(f"Cache exists error: {e}")
+            logger.error("Cache exists error: %s", e)
             return False
 
 

@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     SUPABASE_ANON_KEY: str
     SUPABASE_SERVICE_ROLE_KEY: str
     SUPABASE_JWT_SECRET: str
+    SUPABASE_JWT_JWK: Optional[str] = None
 
     # Redis
     REDIS_HOST: str = "localhost"
@@ -80,12 +81,6 @@ class Settings(BaseSettings):
 
     # Frontend
     FRONTEND_URL: str = "http://localhost:5173"
-
-    # Security
-    SECRET_KEY: str = Field(default="change-this-in-production-secret-key-min-32-chars")
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
-    ALGORITHM: str = "HS256"
 
     # File Upload
     MAX_FILE_SIZE_MB: int = 100

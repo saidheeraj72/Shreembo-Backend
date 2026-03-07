@@ -4,4 +4,27 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic[email]",
+    "pydantic-settings",
+    "python-multipart",
+    "supabase",
+    "httpx",
+    "redis",
+    "python-jose[cryptography]",
+    "passlib[bcrypt]",
+    "boto3",
+    "botocore",
+    "pinecone",
+    "openai",
+    "markitdown",
+    "markitdown[pdf]",
+    "websockets",
+    "aiofiles",
+    "python-magic",
+    "resend",
+    "pymupdf",
+    "pymupdf4llm",
+]

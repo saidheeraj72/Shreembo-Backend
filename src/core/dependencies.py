@@ -7,6 +7,9 @@ from fastapi import Depends, HTTPException, status, Header, Request
 from src.core.database import db
 from src.core.security import verify_supabase_jwt
 from src.core.exceptions import AuthenticationError, AuthorizationError
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 async def get_current_user_id(
@@ -154,7 +157,7 @@ async def get_current_org_context(
             .execute()
         )
     except Exception as e:
-        print(f"Error fetching org membership: {e}")
+        logger.error("Error fetching org membership: %s", e)
         # If error occurs, assume user is part of org but without membership record
         return {
             "org_id": org_id,

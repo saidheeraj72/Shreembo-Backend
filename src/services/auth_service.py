@@ -6,10 +6,13 @@ from typing import Optional, Dict
 from uuid import UUID
 
 from src.core.database import db
-from src.core.security import create_access_token, create_refresh_token, get_password_hash
 from src.core.exceptions import AuthenticationError, ConflictError
 from src.services.audit_service import audit_service
 from src.models.audit import AuditAction
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class AuthService:
@@ -79,7 +82,7 @@ class AuthService:
             email_domain = email.split("@")[1] if "@" in email else None
 
             if email_domain:
-                print(f"🔍 Checking for organization with domain: {email_domain}")
+                logger.info("Checking for organization with domain: %s", email_domain)
 
                 # Find organization by domain
                 org_response = (
@@ -95,8 +98,8 @@ class AuthService:
                     org_id = org_response.data["id"]
                     org_name = org_response.data["name"]
 
-                    print(f"✅ Found matching organization: {org_name} (ID: {org_id})")
-                    print(f"🔗 Auto-assigning user to organization...")
+                    logger.info("Found matching organization: %s (ID: %s)", org_name, org_id)
+                    logger.info("Auto-assigning user to organization")
 
                     # Update user profile to link to organization and activate
                     db.admin.table("profiles").update({
@@ -116,9 +119,9 @@ class AuthService:
                     )
                     user_profile = profile_response.data
 
-                    print(f"✅ User auto-assigned to organization: {org_name}")
+                    logger.info("User auto-assigned to organization: %s", org_name)
                 else:
-                    print(f"ℹ️ No organization found with domain: {email_domain}")
+                    logger.info("No organization found with domain: %s", email_domain)
 
         # Check user status
         if user_profile.get("status") != "active":
@@ -463,18 +466,7 @@ class AuthService:
                 "accepted_by": user_id
             }).eq("id", invitation["id"]).execute()
             
-            # Return current session tokens (we don't have them here, so we might need to regenerate or assume client has them)
-            # BUT the return type expects tokens.
-            # Since user is already logged in, the client actually has tokens.
-            # However, to be consistent, we can generate new tokens or just return dummy/refreshed ones.
-            # Ideally, we call login() but we don't have the password.
-            # Supabase session management is tricky here if we don't have the session object.
-            # We can create a custom token using `create_access_token` if we were managing it fully custom.
-            # But we rely on Supabase Auth.
-            # Workaround: Return empty tokens and let client keep using existing ones?
-            # Or better: The client refetches 'me' after this call.
-            # We'll return dummy tokens and the updated user object.
-            
+            # Client keeps using existing tokens; return empty tokens with updated user
             # Refresh user profile
             updated_profile = (
                 db.admin.table("profiles")
@@ -498,7 +490,7 @@ class AuthService:
             .execute()
         )
         
-        print(f"DEBUG: existing_user_response: {existing_user_response}")
+        logger.debug("existing_user_response: %s", existing_user_response)
 
         if existing_user_response and existing_user_response.data and len(existing_user_response.data) > 0:
             # User exists - link to organization

@@ -5,18 +5,13 @@ from datetime import datetime
 
 from src.core.database import db
 from src.core.exceptions import NotFoundError, AuthorizationError
+from src.utils.text_utils import sanitize_text, sanitize_for_db
 
 
 class ChatService:
     """Service for chat session and message CRUD operations."""
 
-    @staticmethod
-    def _sanitize_text(text: str) -> str:
-        """Remove null characters that PostgreSQL cannot store in text columns."""
-        if text is None:
-            return text
-        # Remove null bytes (\u0000) which cause PostgreSQL error 22P05
-        return text.replace('\x00', '')
+
 
     # ============== Session Operations ==============
 
@@ -175,17 +170,15 @@ class ChatService:
         total_tokens: int = 0
     ) -> dict:
         """Add a message to a chat session."""
-        # Sanitize content to remove null characters (PostgreSQL doesn't support \u0000)
-        sanitized_content = ChatService._sanitize_text(content)
-        
+        # Sanitize all text fields to remove null bytes (PostgreSQL error 22P05)
         data = {
             "session_id": str(session_id),
             "role": role,
-            "content": sanitized_content,
-            "attachments": attachments,
-            "rag_context": rag_context,
-            "web_search_results": web_search_results,
-            "sources": sources,
+            "content": sanitize_text(content) if content else content,
+            "attachments": sanitize_for_db(attachments),
+            "rag_context": sanitize_for_db(rag_context),
+            "web_search_results": sanitize_for_db(web_search_results),
+            "sources": sanitize_for_db(sources),
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
             "total_tokens": total_tokens

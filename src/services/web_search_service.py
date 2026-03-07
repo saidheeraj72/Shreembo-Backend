@@ -1,8 +1,11 @@
 """Web search service using Serper API."""
 from typing import List, Dict, Optional
+import logging
 import httpx
 
 from src.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class WebSearchService:
@@ -56,13 +59,13 @@ class WebSearchService:
                 return results
 
         except httpx.TimeoutException:
-            print("Web search timeout")
+            logger.warning("Web search timeout")
             return []
         except httpx.HTTPStatusError as e:
-            print(f"Web search HTTP error: {e.response.status_code}")
+            logger.error("Web search HTTP error: %s", e.response.status_code)
             return []
         except Exception as e:
-            print(f"Web search error: {e}")
+            logger.error("Web search error: %s", e)
             return []
 
     @staticmethod
@@ -113,7 +116,7 @@ class WebSearchService:
                 return results
 
         except Exception as e:
-            print(f"News search error: {e}")
+            logger.error("News search error: %s", e)
             return []
 
     @staticmethod

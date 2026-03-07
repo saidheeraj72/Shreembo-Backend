@@ -2,6 +2,9 @@
 from typing import Optional, List, Dict, Any, AsyncGenerator
 from uuid import UUID
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 from openai import AsyncOpenAI
 
@@ -99,7 +102,7 @@ class RAGService:
         query_embedding = await openai_client.get_embedding(query)
 
         if not query_embedding:
-            print(f"RAG: Failed to get embedding for query: {query}")
+            logger.error("RAG: Failed to get embedding for query: %s", query)
             return []
 
         # Separate results from main index and chat-sessions index
@@ -112,7 +115,7 @@ class RAGService:
             if org_id and document_source != "personal":
                 namespace = str(org_id)
                 
-            print(f"RAG: Searching main index in namespace: {namespace}, top_k: {top_k}")
+            logger.debug("RAG: Searching main index in namespace: %s, top_k: %s", namespace, top_k)
 
             results = await pinecone_client.query(
                 vector=query_embedding,
@@ -122,11 +125,11 @@ class RAGService:
             )
             if results:
                 main_results = results
-                print(f"RAG: Got {len(results)} results from main index")
+                logger.debug("RAG: Got %d results from main index", len(results))
 
         # Query chat-sessions index if we have a session AND searching session is enabled
         if session_id and search_session:
-            print(f"RAG: Searching chat-sessions index for session: {session_id}")
+            logger.debug("RAG: Searching chat-sessions index for session: %s", session_id)
             
             # Determine namespace for session documents
             # Default to current user (uploader)
@@ -142,11 +145,11 @@ class RAGService:
                 if session_result and session_result.data:
                     # Use Session Owner's ID as namespace
                     session_namespace = str(session_result.data["user_id"])
-                    print(f"RAG: Session owner found: {session_namespace}")
+                    logger.debug("RAG: Session owner found: %s", session_namespace)
             except Exception as e:
-                print(f"RAG: Error fetching session owner: {e}")
+                logger.error("RAG: Error fetching session owner: %s", e)
 
-            print(f"RAG: Querying Pinecone chat-sessions index. Namespace: {session_namespace}, SessionID: {session_id}")
+            logger.debug("RAG: Querying Pinecone chat-sessions index. Namespace: %s, SessionID: %s", session_namespace, session_id)
             session_index_results = await pinecone_client.query(
                 vector=query_embedding,
                 namespace=session_namespace,
@@ -156,12 +159,12 @@ class RAGService:
             )
             if session_index_results:
                 session_results = session_index_results
-                print(f"RAG: Got {len(session_index_results)} matches from Pinecone chat-sessions index")
+                logger.debug("RAG: Got %d matches from Pinecone chat-sessions index", len(session_index_results))
             else:
-                print(f"RAG: No matches from Pinecone chat-sessions index for session {session_id} in namespace {session_namespace}")
+                logger.debug("RAG: No matches from Pinecone chat-sessions index for session %s in namespace %s", session_id, session_namespace)
 
         if not main_results and not session_results:
-            print(f"RAG: No results from Pinecone")
+            logger.debug("RAG: No results from Pinecone")
             return []
 
         # Process main index results with permission checks
@@ -175,7 +178,7 @@ class RAGService:
             accessible_doc_ids = await RAGService.get_accessible_documents_for_rag(
                 user_id, org_id, unique_doc_ids
             )
-            print(f"RAG: {len(accessible_doc_ids)} main index documents accessible after permission check")
+            logger.debug("RAG: %d main index documents accessible after permission check", len(accessible_doc_ids))
 
             if accessible_doc_ids:
                 # Get document details from storage_nodes
@@ -184,7 +187,7 @@ class RAGService:
                 ).in_("id", accessible_doc_ids).eq("status", "active").execute()
 
                 doc_map = {d['id']: d['name'] for d in docs_result.data if docs_result and docs_result.data}
-                print(f"RAG: Found {len(doc_map)} active main index documents in database")
+                logger.debug("RAG: Found %d active main index documents in database", len(doc_map))
 
                 # Build results from main index
                 for r in main_results:
@@ -214,7 +217,7 @@ class RAGService:
             ).execute()
 
             session_doc_map = {d['id']: d['filename'] for d in session_docs_result.data if session_docs_result and session_docs_result.data}
-            print(f"RAG: Found {len(session_doc_map)} completed session documents (out of {len(session_doc_ids)} total)")
+            logger.debug("RAG: Found %d completed session documents (out of %d total)", len(session_doc_map), len(session_doc_ids))
 
             # Build results from session index
             for r in session_results:
@@ -240,9 +243,9 @@ class RAGService:
         # Take top K
         final_results = all_filtered_results[:top_k]
 
-        print(f"RAG: Returning {len(final_results)} chunks ({len([r for r in final_results if r.get('source') == 'session'])} from session, {len([r for r in final_results if not r.get('source')])} from main index)")
+        logger.debug("RAG: Returning %d chunks (%d from session, %d from main index)", len(final_results), len([r for r in final_results if r.get('source') == 'session']), len([r for r in final_results if not r.get('source')]))
         if final_results:
-            print(f"RAG: Score range: {final_results[0]['score']:.3f} to {final_results[-1]['score']:.3f}")
+            logger.debug("RAG: Score range: %.3f to %.3f", final_results[0]['score'], final_results[-1]['score'])
 
         return final_results
 

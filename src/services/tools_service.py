@@ -1,11 +1,14 @@
 """Tools service for OpenAI function calling / agent framework."""
 from typing import List, Dict, Any, Optional
 from uuid import UUID
+import logging
 from openai import AsyncOpenAI
 
 from src.services.rag_service import RAGService
 from src.services.web_search_service import web_search_service
 from src.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 # Tool definitions for OpenAI function calling
@@ -229,7 +232,7 @@ class ToolsService:
             return []
 
         except Exception as e:
-            print(f"Tool determination error: {e}")
+            logger.error("Tool determination error: %s", e)
             # Fallback to simple heuristics
             return await ToolsService._fallback_tool_selection(
                 user_message, rag_enabled, web_search_enabled
