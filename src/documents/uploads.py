@@ -1,4 +1,5 @@
 """Auto-split document service part."""
+import asyncio
 from typing import Optional, List
 from uuid import UUID, uuid4
 from urllib.parse import quote
@@ -8,6 +9,7 @@ from io import BytesIO
 from src.core.database import db
 from src.core.s3 import s3_client
 from src.core.exceptions import NotFoundError, ValidationError, ConflictError
+from src.core.websocket import ws_manager
 from src.llm.embedding import embedding_service
 
 
@@ -86,4 +88,3 @@ class DocumentUploadsMixin:
             )
 
         return document
-

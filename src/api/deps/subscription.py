@@ -5,7 +5,7 @@ from typing import Dict
 from fastapi import Depends
 from uuid import UUID
 
-from src.api.deps.auth import get_current_user_id
+from src.core.dependencies import get_current_user_id
 from src.core.database import db
 from src.access.subscription import subscription_service
 

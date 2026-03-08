@@ -1,4 +1,6 @@
 """Auto-split document service part."""
+from datetime import datetime
+import logging
 from typing import Optional, List
 from uuid import UUID, uuid4
 from urllib.parse import quote
@@ -9,6 +11,8 @@ from src.core.database import db
 from src.core.s3 import s3_client
 from src.core.exceptions import NotFoundError, ValidationError, ConflictError
 from src.llm.embedding import embedding_service
+
+logger = logging.getLogger(__name__)
 
 
 class DocumentOperationsMixin:
@@ -132,4 +136,3 @@ class DocumentOperationsMixin:
         if not doc or not doc.get("s3_key"):
             return None
         return await s3_client.get_presigned_view_url(doc["s3_key"], doc.get("mime_type"))
-

@@ -94,6 +94,17 @@ class RAGRetrievalMixin:
         """
         top_k = top_k or settings.RAG_TOP_K
 
+        # If explicit document selection is provided from org-doc picker,
+        # force retrieval to that set only.
+        normalized_selected_ids = [str(doc_id) for doc_id in (selected_document_ids or []) if doc_id]
+        if normalized_selected_ids:
+            search_main = True
+            search_session = False
+            logger.debug(
+                "RAG: Restricting search to selected documents only (%d docs)",
+                len(normalized_selected_ids),
+            )
+
         # Get query embedding
         query_embedding = await openai_client.get_embedding(query)
 
@@ -115,9 +126,12 @@ class RAGRetrievalMixin:
 
             # Build filter for selected document IDs
             main_filter = None
-            if selected_document_ids:
-                main_filter = {'document_id': {'$in': selected_document_ids}}
-                logger.debug("RAG: Filtering main index by %d selected document IDs", len(selected_document_ids))
+            if normalized_selected_ids:
+                main_filter = {"document_id": {"$in": normalized_selected_ids}}
+                logger.debug(
+                    "RAG: Filtering main index by %d selected document IDs",
+                    len(normalized_selected_ids),
+                )
 
             results = await qdrant_client.query(
                 vector=query_embedding,
