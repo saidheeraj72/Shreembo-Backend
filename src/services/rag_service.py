@@ -81,7 +81,8 @@ class RAGService:
         top_k: int = None,
         document_source: str = "organization",
         search_main: bool = True,
-        search_session: bool = True
+        search_session: bool = True,
+        selected_document_ids: Optional[List[str]] = None
     ) -> List[dict]:
         """
         Search documents using vector similarity with permission filtering.
@@ -114,14 +115,20 @@ class RAGService:
             namespace = str(user_id)
             if org_id and document_source != "personal":
                 namespace = str(org_id)
-                
+
             logger.debug("RAG: Searching main index in namespace: %s, top_k: %s", namespace, top_k)
+
+            # Build filter for selected document IDs
+            main_filter = None
+            if selected_document_ids:
+                main_filter = {'document_id': {'$in': selected_document_ids}}
+                logger.debug("RAG: Filtering main index by %d selected document IDs", len(selected_document_ids))
 
             results = await pinecone_client.query(
                 vector=query_embedding,
                 namespace=namespace,
                 top_k=top_k * 2,  # Get extra for filtering
-                filter=None
+                filter=main_filter
             )
             if results:
                 main_results = results
@@ -298,7 +305,8 @@ class RAGService:
         org_id: Optional[UUID],
         rag_enabled: bool = True,
         web_search_enabled: bool = False,
-        document_source: str = "organization"
+        document_source: str = "organization",
+        selected_document_ids: Optional[List[str]] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Generate streaming response with RAG and optional web search.
@@ -333,10 +341,11 @@ class RAGService:
                 user_id=user_id,
                 org_id=org_id,
                 session_id=session_id,
-                top_k=5,  # Get top 5 chunks
+                top_k=20,  # Get top 20 chunks
                 document_source=document_source,
                 search_main=search_main,
-                search_session=search_session
+                search_session=search_session,
+                selected_document_ids=selected_document_ids
             )
             
             if rag_results:
@@ -397,14 +406,15 @@ class RAGService:
                         "content": content
                     }
 
-            # Build sources for response
+            # Build sources for response with full chunk text and metadata
             sources = [
                 {
                     "document_id": r["document_id"],
                     "document_name": r["document_name"],
                     "chunk_index": r["chunk_index"],
-                    "chunk_text": r["chunk_text"][:200],  # Truncate for response
-                    "score": r["score"]
+                    "chunk_text": r["chunk_text"],
+                    "score": r["score"],
+                    "source_type": r.get("source", "organization"),
                 }
                 for r in rag_results
             ]
@@ -445,7 +455,8 @@ class RAGService:
         org_id: Optional[UUID],
         rag_enabled: bool = True,
         web_search_enabled: bool = False,
-        document_source: str = "organization"
+        document_source: str = "organization",
+        selected_document_ids: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Generate non-streaming response (for REST API fallback).
@@ -464,7 +475,8 @@ class RAGService:
             org_id=org_id,
             rag_enabled=rag_enabled,
             web_search_enabled=web_search_enabled,
-            document_source=document_source
+            document_source=document_source,
+            selected_document_ids=selected_document_ids
         ):
             if chunk["type"] == "rag_context":
                 rag_results = chunk["data"]

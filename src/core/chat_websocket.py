@@ -113,7 +113,8 @@ class ChatConnectionManager:
                 content=data.get("content", ""),
                 rag_enabled=data.get("rag_enabled"),
                 web_search_enabled=data.get("web_search_enabled"),
-                document_source=data.get("document_source", "organization")
+                document_source=data.get("document_source", "organization"),
+                selected_document_ids=data.get("selected_document_ids")
             )
 
         elif msg_type == "stop_generation":
@@ -135,7 +136,8 @@ class ChatConnectionManager:
         content: str,
         rag_enabled: Optional[bool],
         web_search_enabled: Optional[bool],
-        document_source: str = "organization"
+        document_source: str = "organization",
+        selected_document_ids: Optional[list] = None
     ):
         """Process a chat message with streaming response."""
         # Import here to avoid circular dependency
@@ -242,7 +244,8 @@ class ChatConnectionManager:
                 org_id=org_id,
                 rag_enabled=rag_enabled,
                 web_search_enabled=web_search_enabled,
-                document_source=document_source
+                document_source=document_source,
+                selected_document_ids=selected_document_ids
             ):
                 # Check if generation was stopped
                 if not self.active_generations.get(generation_key, False):

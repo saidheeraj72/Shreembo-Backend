@@ -140,7 +140,7 @@ class EmbeddingService:
     @staticmethod
     def chunk_text(text: str) -> List[str]:
         """Split text into chunks using RecursiveHeaderChunker to preserve document structure."""
-        chunker = RecursiveHeaderChunker(max_chunk_size=1500, overlap=100)
+        chunker = RecursiveHeaderChunker(max_chunk_size=1200, overlap=300)
         chunks_with_metadata = chunker.split_text(text)
         return [chunk['text'] for chunk in chunks_with_metadata]
 
