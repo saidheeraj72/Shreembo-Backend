@@ -260,39 +260,28 @@ class RAGService:
     def build_context(
         rag_results: List[dict],
         web_results: Optional[List[dict]] = None,
-        max_length: int = None
     ) -> str:
         """Build context string from RAG and web search results."""
-        max_length = max_length or settings.RAG_MAX_CONTEXT_LENGTH
         context_parts = []
-        current_length = 0
 
         # Add document context
         if rag_results:
             context_parts.append("## Relevant Document Excerpts:\n")
             for i, result in enumerate(rag_results, 1):
-                chunk = (
+                context_parts.append(
                     f"\n### Source {i}: {result['document_name']}\n"
                     f"{result['chunk_text']}\n"
                 )
-                if current_length + len(chunk) > max_length:
-                    break
-                context_parts.append(chunk)
-                current_length += len(chunk)
 
         # Add web search context
         if web_results:
             context_parts.append("\n## Web Search Results:\n")
             for result in web_results:
-                chunk = (
+                context_parts.append(
                     f"\n### {result['title']}\n"
                     f"URL: {result['url']}\n"
                     f"{result['snippet']}\n"
                 )
-                if current_length + len(chunk) > max_length:
-                    break
-                context_parts.append(chunk)
-                current_length += len(chunk)
 
         return "".join(context_parts)
 
