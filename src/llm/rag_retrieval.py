@@ -5,15 +5,18 @@ import logging
 
 from src.core.database import db
 from src.core.openai_client import openai_client
+from src.core.qdrant_client import qdrant_client
 from src.access.permission import permission_service
 from src.llm.web_search import web_search_service
 from src.chat.service import chat_service
 from src.llm.token_usage import token_usage_service
+from src.config import settings
 
 logger = logging.getLogger(__name__)
 
 
 class RAGRetrievalMixin:
+    @staticmethod
     async def get_accessible_documents_for_rag(
         user_id: UUID,
         org_id: Optional[UUID],
@@ -247,4 +250,3 @@ class RAGRetrievalMixin:
             logger.debug("RAG: Score range: %.3f to %.3f", final_results[0]['score'], final_results[-1]['score'])
 
         return final_results
-

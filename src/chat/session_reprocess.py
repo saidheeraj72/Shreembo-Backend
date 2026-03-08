@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class SessionDocumentReprocessMixin:
+    @staticmethod
     def _reprocess_document_background_sync(
         session_document_id: UUID,
         org_id: Optional[UUID],

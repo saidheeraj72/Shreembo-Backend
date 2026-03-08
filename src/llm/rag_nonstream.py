@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class RAGNonStreamingMixin:
+    @staticmethod
     async def generate_response_non_streaming(
         user_message: str,
         session_id: UUID,

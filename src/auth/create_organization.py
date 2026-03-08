@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class AuthCreateOrganizationMixin:
+    @staticmethod
     async def create_organization(
         user_id: UUID,
         name: str,

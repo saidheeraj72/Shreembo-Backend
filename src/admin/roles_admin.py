@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class AdminRolesAdminMixin:
+    @staticmethod
     async def delete_role(
         org_id: UUID,
         role_id: UUID,

@@ -8,6 +8,7 @@ from src.core.openai_client import openai_client
 
 
 class ChatSessionsMixin:
+    @staticmethod
     async def create_session(
         user_id: UUID,
         org_id: Optional[UUID],

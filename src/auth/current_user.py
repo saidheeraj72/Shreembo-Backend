@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class AuthCurrentUserMixin:
+    @staticmethod
     async def get_current_user_with_permissions(user_id: UUID, org_id: Optional[UUID]) -> Dict:
         """
         Get user profile with permissions and super admin status.

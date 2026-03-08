@@ -12,6 +12,7 @@ from src.llm.embedding import embedding_service
 
 
 class DocumentFoldersMixin:
+    @staticmethod
     async def get_branches(org_id: Optional[UUID]) -> List[dict]:
         """Get active branches for organization."""
         if not org_id:

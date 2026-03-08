@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class AdminInvitationResendMixin:
+    @staticmethod
     async def resend_invitation(
         org_id: UUID,
         invitation_id: UUID,

@@ -13,6 +13,11 @@ def sanitize_text(text: str) -> str:
     return text.replace('\x00', '')
 
 
+def sanitise_text(text: str) -> str:
+    """Backward-compatible alias using UK spelling."""
+    return sanitize_text(text)
+
+
 def sanitize_for_db(data: Any) -> Any:
     """Recursively sanitize all strings in a data structure for PostgreSQL.
 

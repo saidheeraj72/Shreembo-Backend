@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class SessionDocumentCleanupMixin:
+    @staticmethod
     async def delete_all_session_documents(
         session_id: UUID,
         user_id: UUID

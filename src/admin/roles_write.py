@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class AdminRolesWriteMixin:
+    @staticmethod
     async def create_role(
         org_id: UUID,
         data: dict,

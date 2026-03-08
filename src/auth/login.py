@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class AuthLoginMixin:
+    @staticmethod
     async def login(
         email: str,
         password: str,

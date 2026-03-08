@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class PermissionFolderAccessMixin:
+    @staticmethod
     async def grant_folder_access(
         user_id: UUID,
         folder_id: UUID,

@@ -12,6 +12,7 @@ from src.llm.embedding import embedding_service
 
 
 class DocumentOperationsMixin:
+    @staticmethod
     async def get_document(doc_id: UUID, org_id: Optional[UUID]) -> Optional[dict]:
         query = db.admin.table("storage_nodes").select("*").eq("id", str(doc_id))
 

@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class AuthInviteAcceptMixin:
+    @staticmethod
     async def accept_invitation(
         invite_token: str,
         email: str,

@@ -12,6 +12,7 @@ from src.llm.embedding import embedding_service
 
 
 class DocumentReplicationMixin:
+    @staticmethod
     async def replicate_document(doc_id: UUID, org_id: Optional[UUID], target_branch_id: UUID) -> Optional[dict]:
         """Replicate a document to another branch, including file, metadata, and embeddings."""
         from src.core.qdrant_client import qdrant_client

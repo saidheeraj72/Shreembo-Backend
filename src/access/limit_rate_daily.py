@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 class LimitRateDailyMixin:
+    @staticmethod
     async def check_rate_limit(
         user_id: UUID,
         org_id: Optional[UUID]

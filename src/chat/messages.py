@@ -5,6 +5,7 @@ from datetime import datetime
 
 from src.core.database import db
 from src.core.openai_client import openai_client
+from src.utils.text_utils import sanitize_text, sanitize_for_db
 
 
 class ChatMessagesMixin:

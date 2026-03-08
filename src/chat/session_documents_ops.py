@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class SessionDocumentOpsMixin:
+    @staticmethod
     async def get_session_documents(session_id: UUID) -> List[dict]:
         """Get all documents for a session."""
         result = db.admin.table("session_documents").select(

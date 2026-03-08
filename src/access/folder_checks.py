@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class PermissionFolderChecksMixin:
+    @staticmethod
     async def check_folder_access(
         user_id: UUID,
         folder_id: UUID,
@@ -104,6 +105,3 @@ class PermissionFolderChecksMixin:
 
         role_slug = member_response.data.get("roles", {}).get("slug", "")
         return role_slug in ["owner", "admin"]
-
-
-# Global permission service instance

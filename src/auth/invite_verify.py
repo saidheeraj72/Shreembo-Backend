@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class AuthInviteVerifyMixin:
+    @staticmethod
     async def verify_invitation(invite_token: str) -> Dict:
         """
         Verify an invitation token and check if user already exists.

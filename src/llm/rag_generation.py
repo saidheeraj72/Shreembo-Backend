@@ -9,6 +9,7 @@ from src.access.permission import permission_service
 from src.llm.web_search import web_search_service
 from src.chat.service import chat_service
 from src.llm.token_usage import token_usage_service
+from src.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ class RAGGenerationMixin:
         - type: 'rag_context' | 'web_search' | 'chunk' | 'done' | 'error'
         - content/data based on type
         """
-        client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+        client = openai_client.client
 
         rag_results = []
         web_results = []
@@ -193,4 +194,3 @@ class RAGGenerationMixin:
                 "type": "error",
                 "error": str(e)
             }
-

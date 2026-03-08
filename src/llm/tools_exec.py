@@ -7,6 +7,7 @@ import logging
 from src.llm.rag import RAGService
 from src.llm.web_search import web_search_service
 from src.core.openai_client import openai_client
+from src.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -137,4 +138,3 @@ class ToolsExecutionMixin:
                 "error": f"Web search failed: {str(e)}",
                 "results": []
             }
-

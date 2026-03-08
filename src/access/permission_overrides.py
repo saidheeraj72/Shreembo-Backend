@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class PermissionOverridesMixin:
+    @staticmethod
     async def grant_user_permission(
         user_id: UUID,
         permission_id: UUID,
@@ -109,4 +110,3 @@ class PermissionOverridesMixin:
     # ==========================================
     # FOLDER ACCESS PERMISSIONS
     # ==========================================
-

@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class SessionDocumentProcessingMixin:
+    @staticmethod
     async def _process_document_background(
         org_id: Optional[UUID],
         s3_key: str,

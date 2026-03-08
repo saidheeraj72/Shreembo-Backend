@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class AuthOrganizationsMixin:
+    @staticmethod
     async def get_user_organizations(user_id: UUID) -> list:
         """
         Get all organizations the user is a member of.

@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class PermissionChecksMixin:
+    @staticmethod
     async def check_permission(
         user_id: UUID,
         org_id: UUID,
@@ -228,4 +229,3 @@ class PermissionChecksMixin:
         await cache.set(cache_key, permissions)
         logger.info(f"[PERMS] Returning {len(permissions)} permission modules")
         return permissions
-

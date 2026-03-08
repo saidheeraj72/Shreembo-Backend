@@ -7,6 +7,7 @@ import logging
 from src.llm.rag import RAGService
 from src.llm.web_search import web_search_service
 from src.core.openai_client import openai_client
+from src.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ AVAILABLE_TOOLS = [
 
 
 class ToolsDecisionMixin:
+    @staticmethod
     async def determine_tools_to_use(
         user_message: str,
         chat_history: List[Dict[str, str]],
@@ -67,16 +69,16 @@ class ToolsDecisionMixin:
         # Build available tools based on what's enabled
         available_tools = []
         if rag_enabled:
-            available_tools.append(TOOL_DEFINITIONS[0])  # search_documents
+            available_tools.append(AVAILABLE_TOOLS[0])  # search_documents
         if web_search_enabled and settings.SERPER_API_KEY:
-            available_tools.append(TOOL_DEFINITIONS[1])  # search_web
+            available_tools.append(AVAILABLE_TOOLS[1])  # search_web
 
         # If no tools are available, return empty
         if not available_tools:
             return []
 
         try:
-            client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+            client = openai_client.client
 
             # Build messages for tool selection
             messages = [

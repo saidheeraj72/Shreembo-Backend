@@ -12,6 +12,7 @@ from src.llm.embedding import embedding_service
 
 
 class DocumentUploadsMixin:
+    @staticmethod
     async def init_upload(org_id: Optional[UUID], owner_id: UUID, filename: str, content_type: str,
                           size_bytes: int, parent_id: Optional[UUID] = None,
                           branch_id: Optional[UUID] = None) -> dict:
