@@ -7,7 +7,7 @@ from uuid import UUID
 
 from src.api.deps.auth import get_current_user_id
 from src.core.database import db
-from src.services.subscription_service import subscription_service
+from src.access.subscription import subscription_service
 
 
 async def check_active_subscription(

@@ -14,7 +14,7 @@ from src.models.limits import (
     EntityType,
     LimitType
 )
-from src.services.limit_service import limit_service
+from src.access.limit import limit_service
 
 
 router = APIRouter(prefix="/limits", tags=["limits"])

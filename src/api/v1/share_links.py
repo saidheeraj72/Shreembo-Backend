@@ -4,7 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 
 from src.core.dependencies import get_current_user_id, get_current_org_context
-from src.services.share_link_service import share_link_service
+from src.chat.share_link import share_link_service
 from src.models.share_link import ShareLinkCreate, ShareLinkResponse, ShareLinkAccess
 
 router = APIRouter()

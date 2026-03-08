@@ -7,7 +7,7 @@ from pydantic import BaseModel, EmailStr
 
 from src.core.exceptions import ConflictError
 from src.core.database import db
-from src.services.audit_service import audit_service
+from src.audit.service import audit_service
 from src.models.audit import AuditAction
 
 
@@ -46,7 +46,7 @@ async def create_organization_request(
     Raises:
         ConflictError: If email already registered
     """
-    from src.services.auth_service import auth_service
+    from src.auth.service import auth_service
 
     # Get client info for audit
     client_ip = request.client.host if request.client else None

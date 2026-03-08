@@ -20,8 +20,8 @@ with patch.dict(os.environ, {
     "AWS_REGION": "us-east-1",
     "AWS_BUCKET_NAME": "test-bucket"
 }):
-    from src.services.chat_service import ChatService
-    from src.services.session_document_service import SessionDocumentService
+    from src.chat.service import ChatService
+    from src.chat.session_document import SessionDocumentService
 
 def test_delete_session_cleanup():
     asyncio.run(_test_delete_session_cleanup_async())
@@ -32,9 +32,9 @@ async def _test_delete_session_cleanup_async():
     
     # Mock dependencies
     # Patch pinecone_client where it is defined, since it is imported locally in the function
-    with patch("src.services.chat_service.db") as mock_chat_db, \
-         patch("src.services.session_document_service.db") as mock_doc_db, \
-         patch("src.services.session_document_service.s3_client") as mock_s3, \
+    with patch("src.chat.service.db") as mock_chat_db, \
+         patch("src.chat.session_document.db") as mock_doc_db, \
+         patch("src.chat.session_document.s3_client") as mock_s3, \
          patch("src.core.pinecone_client.pinecone_client") as mock_pinecone:
         
         # Configure Mocks
