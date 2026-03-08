@@ -10,7 +10,7 @@ from markitdown import MarkItDown
 
 from src.core.s3 import s3_client
 from src.core.openai_client import openai_client
-from src.core.pinecone_client import pinecone_client
+from src.core.qdrant_client import qdrant_client
 from src.core.websocket import ws_manager
 from src.core.database import db
 from src.config import settings
@@ -198,13 +198,13 @@ class EmbeddingService:
 
             await ws_manager.send_upload_progress(user_id, upload_id, "storing_embeddings", 80)
 
-            # Determine Pinecone index and namespace
+            # Determine collection and namespace
             if is_session_document:
-                index_name = settings.PINECONE_CHAT_SESSIONS_INDEX
-                pinecone_namespace = user_id
+                index_name = settings.QDRANT_SESSIONS_COLLECTION
+                namespace = user_id
             else:
                 index_name = None
-                pinecone_namespace = str(org_id) if org_id else user_id
+                namespace = str(org_id) if org_id else user_id
 
             # Build vectors
             vectors = []
@@ -224,10 +224,10 @@ class EmbeddingService:
                     'metadata': metadata
                 })
 
-            # Upsert in batches (Pinecone 2MB limit per request)
+            # Upsert in batches
             batch_size = 50
             for i in range(0, len(vectors), batch_size):
-                await pinecone_client.upsert(vectors[i:i + batch_size], pinecone_namespace, index_name)
+                await qdrant_client.upsert(vectors[i:i + batch_size], namespace, index_name)
 
             if not is_session_document:
                 db.admin.table("storage_nodes").update({
@@ -261,9 +261,9 @@ class EmbeddingService:
         query_embedding = await openai_client.get_embedding(query)
 
         filter_dict = {'folder_id': str(folder_id)} if folder_id else None
-        pinecone_namespace = str(org_id) if org_id else str(user_id)
+        namespace = str(org_id) if org_id else str(user_id)
 
-        results = await pinecone_client.query(query_embedding, pinecone_namespace, top_k, filter_dict)
+        results = await qdrant_client.query(query_embedding, namespace, top_k, filter_dict)
 
         doc_ids = list(set(r.metadata.get('document_id') for r in results if r.metadata))
         if not doc_ids:

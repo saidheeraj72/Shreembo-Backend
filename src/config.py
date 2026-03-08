@@ -116,10 +116,10 @@ class Settings(BaseSettings):
     AWS_S3_REGION: str 
     AWS_S3_ENDPOINT_URL: Optional[str] = None  # For S3-compatible services
 
-    # Pinecone
-    PINECONE_API_KEY: Optional[str] = None
-    PINECONE_INDEX_NAME: str = "document-embeddings"
-    PINECONE_CHAT_SESSIONS_INDEX: str = "chat-sessions"
+    # Qdrant
+    QDRANT_PATH: str = "./qdrant_data"
+    QDRANT_MAIN_COLLECTION: str = "document-embeddings"
+    QDRANT_SESSIONS_COLLECTION: str = "chat-sessions"
 
     # OpenAI
     OPENAI_API_KEY: Optional[str] = None

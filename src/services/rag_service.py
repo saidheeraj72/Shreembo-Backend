@@ -10,7 +10,7 @@ from openai import AsyncOpenAI
 
 from src.core.database import db
 from src.core.openai_client import openai_client
-from src.core.pinecone_client import pinecone_client
+from src.core.qdrant_client import qdrant_client
 from src.services.permission_service import permission_service
 from src.services.web_search_service import web_search_service
 from src.services.chat_service import chat_service
@@ -124,7 +124,7 @@ class RAGService:
                 main_filter = {'document_id': {'$in': selected_document_ids}}
                 logger.debug("RAG: Filtering main index by %d selected document IDs", len(selected_document_ids))
 
-            results = await pinecone_client.query(
+            results = await qdrant_client.query(
                 vector=query_embedding,
                 namespace=namespace,
                 top_k=top_k * 2,  # Get extra for filtering
@@ -157,12 +157,12 @@ class RAGService:
                 logger.error("RAG: Error fetching session owner: %s", e)
 
             logger.debug("RAG: Querying Pinecone chat-sessions index. Namespace: %s, SessionID: %s", session_namespace, session_id)
-            session_index_results = await pinecone_client.query(
+            session_index_results = await qdrant_client.query(
                 vector=query_embedding,
                 namespace=session_namespace,
                 top_k=top_k * 2,
                 filter={'session_id': str(session_id)},  # Filter by session for isolation
-                index_name=settings.PINECONE_CHAT_SESSIONS_INDEX
+                index_name=settings.QDRANT_SESSIONS_COLLECTION
             )
             if session_index_results:
                 session_results = session_index_results

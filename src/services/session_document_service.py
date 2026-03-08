@@ -376,7 +376,7 @@ class SessionDocumentService:
 
         This removes the session document and cleans up embeddings from chat-sessions index.
         """
-        from src.core.pinecone_client import pinecone_client
+        from src.core.qdrant_client import qdrant_client
 
         # Get document info before deleting
         session_doc = await SessionDocumentService.get_session_document(session_document_id)
@@ -392,10 +392,10 @@ class SessionDocumentService:
         if result.data:
             # Clean up embeddings from chat-sessions index
             # Use session_document_id as the document_id
-            await pinecone_client.delete_by_document(
+            await qdrant_client.delete_by_document(
                 document_id=str(session_document_id),
                 namespace=str(user_id),
-                index_name=settings.PINECONE_CHAT_SESSIONS_INDEX
+                index_name=settings.QDRANT_SESSIONS_COLLECTION
             )
 
             # Clean up S3 file
@@ -451,16 +451,16 @@ class SessionDocumentService:
         filename: str
     ):
         """Background task for reprocessing existing document embeddings."""
-        from src.core.pinecone_client import pinecone_client
+        from src.core.qdrant_client import qdrant_client
 
         logger.info(f"Reprocessing embeddings for session document {session_document_id}")
 
         try:
             # Delete existing embeddings first
-            await pinecone_client.delete_by_document(
+            await qdrant_client.delete_by_document(
                 document_id=str(session_document_id),
                 namespace=user_id,
-                index_name=settings.PINECONE_CHAT_SESSIONS_INDEX
+                index_name=settings.QDRANT_SESSIONS_COLLECTION
             )
 
             # Process embeddings again
@@ -624,7 +624,7 @@ class SessionDocumentService:
         Delete all documents associated with a session.
         Called when a session is deleted.
         """
-        from src.core.pinecone_client import pinecone_client
+        from src.core.qdrant_client import qdrant_client
 
         # Get all session documents
         session_docs = await SessionDocumentService.get_session_documents(session_id)
@@ -634,10 +634,10 @@ class SessionDocumentService:
             session_doc_id = doc.get("id")
             if session_doc_id:
                 # Delete embeddings from chat-sessions index
-                await pinecone_client.delete_by_document(
+                await qdrant_client.delete_by_document(
                     document_id=session_doc_id,
                     namespace=str(user_id),
-                    index_name=settings.PINECONE_CHAT_SESSIONS_INDEX
+                    index_name=settings.QDRANT_SESSIONS_COLLECTION
                 )
 
                 # Delete S3 file

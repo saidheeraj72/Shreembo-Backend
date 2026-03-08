@@ -18,8 +18,8 @@ passlib[bcrypt]
 boto3
 botocore
 
-# Pinecone Vector Database
-pinecone
+# Qdrant Vector Database
+qdrant-client
 
 # OpenAI for Embeddings
 openai
