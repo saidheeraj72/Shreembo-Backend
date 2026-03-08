@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(grep -r \"router = APIRouter\" /Users/saidheeraj/Desktop/backend/src/api/v1/*.py)"
     ]
   }
 }

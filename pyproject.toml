@@ -17,7 +17,7 @@ dependencies = [
     "passlib[bcrypt]",
     "boto3",
     "botocore",
-    "pinecone",
+    "qdrant-client",
     "openai",
     "markitdown",
     "markitdown[pdf]",

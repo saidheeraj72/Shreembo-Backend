@@ -1,6 +1,7 @@
 """Document and folder API routes."""
 from typing import Optional, List
 from uuid import UUID, uuid4
+from urllib.parse import unquote_plus
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, Query, HTTPException, UploadFile, File, Form
 
 from src.core.websocket import ws_manager
@@ -239,12 +240,15 @@ async def complete_upload(
     if parent_id:
          await check_resource_access(user_id, org_id, parent_id, "edit")
 
+    # Decode URL-encoded filename (e.g. "My+Document.pdf" -> "My Document.pdf")
+    decoded_filename = unquote_plus(filename)
+
     return await document_service.complete_upload(
         org_id=UUID(org_id) if org_id else None,
         owner_id=user_id,
         upload_id=data.upload_id,
         s3_key=data.s3_key,
-        filename=filename,
+        filename=decoded_filename,
         content_type=content_type,
         size_bytes=size_bytes,
         parent_id=parent_id,

@@ -260,9 +260,9 @@ class DocumentService:
         if doc.get("s3_key"):
             await s3_client.delete_file(doc["s3_key"])
 
-        # Delete from Pinecone
-        from src.core.pinecone_client import pinecone_client
-        await pinecone_client.delete_by_document(str(doc_id), str(org_id) if org_id else "personal")
+        # Delete from vector DB
+        from src.core.qdrant_client import qdrant_client
+        await qdrant_client.delete_by_document(str(doc_id), str(org_id) if org_id else "personal")
 
         # Soft delete in DB
         db.admin.table("storage_nodes").update({
@@ -326,7 +326,7 @@ class DocumentService:
     @staticmethod
     async def replicate_document(doc_id: UUID, org_id: Optional[UUID], target_branch_id: UUID) -> Optional[dict]:
         """Replicate a document to another branch, including file, metadata, and embeddings."""
-        from src.core.pinecone_client import pinecone_client
+        from src.core.qdrant_client import qdrant_client
 
         # Get source document
         source_doc = await DocumentService.get_document(doc_id, org_id)
@@ -370,7 +370,7 @@ class DocumentService:
 
         if new_doc and source_doc.get("embedding_status") == "completed":
             # Copy embeddings from source to target
-            await pinecone_client.copy_embeddings(
+            await qdrant_client.copy_embeddings(
                 source_doc_id=str(doc_id),
                 target_doc_id=new_doc["id"],
                 source_namespace=str(org_id),

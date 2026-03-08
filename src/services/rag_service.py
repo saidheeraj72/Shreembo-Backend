@@ -10,7 +10,7 @@ from openai import AsyncOpenAI
 
 from src.core.database import db
 from src.core.openai_client import openai_client
-from src.core.pinecone_client import pinecone_client
+from src.core.qdrant_client import qdrant_client
 from src.services.permission_service import permission_service
 from src.services.web_search_service import web_search_service
 from src.services.chat_service import chat_service
@@ -81,7 +81,8 @@ class RAGService:
         top_k: int = None,
         document_source: str = "organization",
         search_main: bool = True,
-        search_session: bool = True
+        search_session: bool = True,
+        selected_document_ids: Optional[List[str]] = None
     ) -> List[dict]:
         """
         Search documents using vector similarity with permission filtering.
@@ -114,14 +115,20 @@ class RAGService:
             namespace = str(user_id)
             if org_id and document_source != "personal":
                 namespace = str(org_id)
-                
+
             logger.debug("RAG: Searching main index in namespace: %s, top_k: %s", namespace, top_k)
 
-            results = await pinecone_client.query(
+            # Build filter for selected document IDs
+            main_filter = None
+            if selected_document_ids:
+                main_filter = {'document_id': {'$in': selected_document_ids}}
+                logger.debug("RAG: Filtering main index by %d selected document IDs", len(selected_document_ids))
+
+            results = await qdrant_client.query(
                 vector=query_embedding,
                 namespace=namespace,
                 top_k=top_k * 2,  # Get extra for filtering
-                filter=None
+                filter=main_filter
             )
             if results:
                 main_results = results
@@ -150,12 +157,12 @@ class RAGService:
                 logger.error("RAG: Error fetching session owner: %s", e)
 
             logger.debug("RAG: Querying Pinecone chat-sessions index. Namespace: %s, SessionID: %s", session_namespace, session_id)
-            session_index_results = await pinecone_client.query(
+            session_index_results = await qdrant_client.query(
                 vector=query_embedding,
                 namespace=session_namespace,
                 top_k=top_k * 2,
                 filter={'session_id': str(session_id)},  # Filter by session for isolation
-                index_name=settings.PINECONE_CHAT_SESSIONS_INDEX
+                index_name=settings.QDRANT_SESSIONS_COLLECTION
             )
             if session_index_results:
                 session_results = session_index_results
@@ -253,39 +260,28 @@ class RAGService:
     def build_context(
         rag_results: List[dict],
         web_results: Optional[List[dict]] = None,
-        max_length: int = None
     ) -> str:
         """Build context string from RAG and web search results."""
-        max_length = max_length or settings.RAG_MAX_CONTEXT_LENGTH
         context_parts = []
-        current_length = 0
 
         # Add document context
         if rag_results:
             context_parts.append("## Relevant Document Excerpts:\n")
             for i, result in enumerate(rag_results, 1):
-                chunk = (
+                context_parts.append(
                     f"\n### Source {i}: {result['document_name']}\n"
                     f"{result['chunk_text']}\n"
                 )
-                if current_length + len(chunk) > max_length:
-                    break
-                context_parts.append(chunk)
-                current_length += len(chunk)
 
         # Add web search context
         if web_results:
             context_parts.append("\n## Web Search Results:\n")
             for result in web_results:
-                chunk = (
+                context_parts.append(
                     f"\n### {result['title']}\n"
                     f"URL: {result['url']}\n"
                     f"{result['snippet']}\n"
                 )
-                if current_length + len(chunk) > max_length:
-                    break
-                context_parts.append(chunk)
-                current_length += len(chunk)
 
         return "".join(context_parts)
 
@@ -298,7 +294,8 @@ class RAGService:
         org_id: Optional[UUID],
         rag_enabled: bool = True,
         web_search_enabled: bool = False,
-        document_source: str = "organization"
+        document_source: str = "organization",
+        selected_document_ids: Optional[List[str]] = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Generate streaming response with RAG and optional web search.
@@ -333,10 +330,11 @@ class RAGService:
                 user_id=user_id,
                 org_id=org_id,
                 session_id=session_id,
-                top_k=5,  # Get top 5 chunks
+                top_k=20,  # Get top 20 chunks
                 document_source=document_source,
                 search_main=search_main,
-                search_session=search_session
+                search_session=search_session,
+                selected_document_ids=selected_document_ids
             )
             
             if rag_results:
@@ -397,14 +395,15 @@ class RAGService:
                         "content": content
                     }
 
-            # Build sources for response
+            # Build sources for response with full chunk text and metadata
             sources = [
                 {
                     "document_id": r["document_id"],
                     "document_name": r["document_name"],
                     "chunk_index": r["chunk_index"],
-                    "chunk_text": r["chunk_text"][:200],  # Truncate for response
-                    "score": r["score"]
+                    "chunk_text": r["chunk_text"],
+                    "score": r["score"],
+                    "source_type": r.get("source", "organization"),
                 }
                 for r in rag_results
             ]
@@ -445,7 +444,8 @@ class RAGService:
         org_id: Optional[UUID],
         rag_enabled: bool = True,
         web_search_enabled: bool = False,
-        document_source: str = "organization"
+        document_source: str = "organization",
+        selected_document_ids: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Generate non-streaming response (for REST API fallback).
@@ -464,7 +464,8 @@ class RAGService:
             org_id=org_id,
             rag_enabled=rag_enabled,
             web_search_enabled=web_search_enabled,
-            document_source=document_source
+            document_source=document_source,
+            selected_document_ids=selected_document_ids
         ):
             if chunk["type"] == "rag_context":
                 rag_results = chunk["data"]
