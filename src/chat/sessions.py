@@ -5,6 +5,7 @@ from datetime import datetime
 
 from src.core.database import db
 from src.core.openai_client import openai_client
+from src.core.exceptions import AuthorizationError
 
 
 class ChatSessionsMixin:
