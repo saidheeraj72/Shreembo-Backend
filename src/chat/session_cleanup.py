@@ -36,10 +36,12 @@ class SessionDocumentCleanupMixin:
         for doc in session_docs:
             session_doc_id = doc.get("id")
             if session_doc_id:
+                doc_user_id = doc.get("user_id")
+                namespace = str(doc_user_id) if doc_user_id else str(user_id)
                 # Delete embeddings from chat-sessions index
                 await qdrant_client.delete_by_document(
-                    document_id=session_doc_id,
-                    namespace=str(user_id),
+                    document_id=str(session_doc_id),
+                    namespace=namespace,
                     index_name=settings.QDRANT_SESSIONS_COLLECTION
                 )
 

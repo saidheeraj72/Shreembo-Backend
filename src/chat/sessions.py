@@ -110,6 +110,13 @@ class ChatSessionsMixin:
         # Import here to avoid circular dependency
         from src.chat.session_document import session_document_service
 
+        # Validate ownership before cleanup to avoid touching unrelated sessions.
+        session = db.admin.table("chat_sessions").select("id").eq(
+            "id", str(session_id)
+        ).eq("user_id", str(user_id)).neq("status", "deleted").maybe_single().execute()
+        if not session or not session.data:
+            return False
+
         # Clean up all session documents and their embeddings
         await session_document_service.delete_all_session_documents(session_id, user_id)
 
