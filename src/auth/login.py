@@ -42,18 +42,21 @@ class AuthLoginMixin:
                 "password": password,
             })
         except Exception as e:
-            # Log failed login attempt
-            await audit_service.log(
-                org_id=None,
-                user_id=UUID("00000000-0000-0000-0000-000000000000"),  # Unknown user
-                user_email=email,
-                action=AuditAction.LOGIN,
-                resource_type="auth",
-                description="Failed login attempt",
-                details={"error": str(e)},
-                ip_address=ip_address,
-                user_agent=user_agent,
-            )
+            # Log failed login attempt (best-effort, don't let audit failure mask auth error)
+            try:
+                await audit_service.log(
+                    org_id=None,
+                    user_id=None,
+                    user_email=email,
+                    action=AuditAction.LOGIN,
+                    resource_type="auth",
+                    description="Failed login attempt",
+                    details={"error": str(e)},
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                )
+            except Exception:
+                logger.warning("Failed to log audit entry for failed login attempt by %s", email)
             raise AuthenticationError("Invalid email or password")
 
         user_id = auth_response.user.id

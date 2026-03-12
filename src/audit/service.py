@@ -54,7 +54,7 @@ class AuditService:
         """
         log_data = {
             "org_id": str(org_id) if org_id else None,
-            "user_id": str(user_id),
+            "user_id": str(user_id) if user_id else None,
             "user_email": user_email,
             "user_name": user_name,
             "action": action.value if isinstance(action, AuditAction) else action,
