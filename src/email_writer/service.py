@@ -67,8 +67,11 @@ class EmailWriterService:
         tone_desc = TONE_DESCRIPTIONS.get(request.tone, "professional")
         type_desc = EMAIL_TYPE_DESCRIPTIONS.get(request.email_type, "a new email")
 
+        language = request.language or "English"
+
         user_message_parts = [
             f"Write {type_desc} with a {tone_desc} tone.",
+            f"Write the entire email in {language}.",
         ]
 
         if request.subject:

@@ -31,6 +31,7 @@ class EmailGenerateRequest(BaseModel):
     recipient_context: Optional[str] = Field(None, max_length=200, description="Who the email is for (e.g., Client, Manager)")
     tone: EmailTone = Field(default=EmailTone.PROFESSIONAL, description="Desired tone of the email")
     email_type: EmailType = Field(default=EmailType.NEW, description="Type of email to generate")
+    language: str = Field(default="English", max_length=50, description="Language for the generated email")
 
 
 class EmailGenerateResponse(BaseModel):
