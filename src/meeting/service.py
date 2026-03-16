@@ -96,6 +96,27 @@ class MeetingService:
             return response.data[0]
         return None
 
+    async def save_transcript(
+        self, user_id: str, meeting_id: str, transcript: list[dict]
+    ) -> Optional[dict]:
+        """Save/overwrite the transcript for a meeting."""
+        meeting = await self.get_meeting(user_id, meeting_id)
+        if not meeting:
+            return None
+
+        now = datetime.now(timezone.utc).isoformat()
+        response = (
+            db.admin.table("meetings")
+            .update({"transcript": transcript, "updated_at": now})
+            .eq("id", meeting_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        logger.info(
+            "Saved transcript for meeting %s (%d entries)", meeting_id, len(transcript)
+        )
+        return response.data[0] if response.data else None
+
     async def end_meeting(
         self,
         user_id: str,
@@ -116,9 +137,15 @@ class MeetingService:
 
         existing_transcript = meeting.get("transcript") or []
         incoming_transcript = transcript or []
-        # Use client transcript as fallback if backend transcript is empty.
-        if not existing_transcript and incoming_transcript:
+        # Save client transcript if backend transcript is empty, or always
+        # overwrite if the client has data (client is the source of truth).
+        if incoming_transcript:
             update_payload["transcript"] = incoming_transcript
+            logger.info(
+                "Saving %d transcript entries from client for meeting %s",
+                len(incoming_transcript),
+                meeting_id,
+            )
 
         response = (
             db.admin.table("meetings")

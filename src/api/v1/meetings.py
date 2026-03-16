@@ -179,6 +179,62 @@ async def get_transcript(
         )
 
 
+@router.put(
+    "/{meeting_id}/transcript",
+    response_model=MeetingDetailResponse,
+    summary="Save meeting transcript",
+)
+async def save_transcript(
+    meeting_id: str,
+    transcript: list[TranscriptEntry],
+    user_id: UUID = Depends(get_current_user_id),
+) -> MeetingDetailResponse:
+    """Save the full transcript from the frontend to the database."""
+    try:
+        transcript_dicts = [
+            {
+                "id": entry.id,
+                "timestamp": entry.timestamp,
+                "text": entry.text,
+                "speaker": entry.speaker,
+                "is_final": entry.is_final,
+            }
+            for entry in transcript
+        ]
+        meeting = await meeting_service.save_transcript(
+            str(user_id), meeting_id, transcript_dicts
+        )
+        if not meeting:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Meeting not found.",
+            )
+
+        parsed_transcript = [TranscriptEntry(**t) for t in meeting.get("transcript") or []]
+        notes = None
+        if meeting.get("notes"):
+            notes = MeetingNotesResponse(**meeting["notes"])
+
+        return MeetingDetailResponse(
+            id=meeting["id"],
+            title=meeting["title"],
+            status=meeting["status"],
+            duration=meeting.get("duration", 0),
+            created_at=meeting["created_at"],
+            updated_at=meeting["updated_at"],
+            transcript=parsed_transcript,
+            notes=notes,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Failed to save transcript for meeting %s: %s", meeting_id, e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save transcript.",
+        )
+
+
 @router.post(
     "/{meeting_id}/notes",
     response_model=MeetingNotesResponse,
