@@ -5,8 +5,8 @@ from uuid import UUID
 from fastapi import Depends, HTTPException, status
 
 from src.core.dependencies import get_current_user, get_current_org_context
-from src.services.permission_service import permission_service
-from src.services.super_admin_service import super_admin_service
+from src.access.permission import permission_service
+from src.super_admin.service import super_admin_service
 
 
 def require_permission(module: str, action: str):

@@ -4,9 +4,9 @@ from typing import Dict, Set, Optional
 from uuid import UUID, uuid4
 from fastapi import WebSocket
 
-from src.services.rag_service import rag_service
-from src.services.chat_service import chat_service
-from src.services.limit_service import limit_service
+from src.llm.rag import rag_service
+from src.chat.service import chat_service
+from src.access.limit import limit_service
 
 
 class ChatConnectionManager:
@@ -141,7 +141,7 @@ class ChatConnectionManager:
     ):
         """Process a chat message with streaming response."""
         # Import here to avoid circular dependency
-        from src.services.session_document_service import session_document_service
+        from src.chat.session_document import session_document_service
 
         if not session_id or not content:
             await websocket.send_json({
