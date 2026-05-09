@@ -257,7 +257,24 @@ class ChatConnectionManager:
                     })
                     break
 
-                if chunk["type"] == "rag_context":
+                if chunk["type"] == "tool_start":
+                    await websocket.send_json({
+                        "type": "tool_call",
+                        "session_id": str(session_id),
+                        "tools": [chunk["name"]],
+                        "query": chunk.get("query", ""),
+                    })
+
+                elif chunk["type"] == "tool_done":
+                    if chunk["name"] == "list_documents" and chunk.get("data"):
+                        await websocket.send_json({
+                            "type": "document_list",
+                            "session_id": str(session_id),
+                            "data": chunk["data"],
+                        })
+                    # other tool_done events: frontend clears tool indicator on rag_context
+
+                elif chunk["type"] == "rag_context":
                     rag_results = chunk["data"]
                     await websocket.send_json({
                         "type": "rag_context",
@@ -271,6 +288,14 @@ class ChatConnectionManager:
                         "type": "web_search",
                         "session_id": str(session_id),
                         "data": web_results
+                    })
+
+                elif chunk["type"] == "reasoning":
+                    await websocket.send_json({
+                        "type": "stream_reasoning",
+                        "session_id": str(session_id),
+                        "message_id": str(response_message_id),
+                        "content": chunk["content"]
                     })
 
                 elif chunk["type"] == "chunk":

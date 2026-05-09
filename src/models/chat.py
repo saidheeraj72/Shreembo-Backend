@@ -204,6 +204,7 @@ class WSMessageType(str, Enum):
     # Outgoing (server -> client)
     STREAM_START = "stream_start"
     STREAM_CHUNK = "stream_chunk"
+    STREAM_REASONING = "stream_reasoning"
     STREAM_END = "stream_end"
     STREAM_ERROR = "stream_error"
     RAG_CONTEXT = "rag_context"
