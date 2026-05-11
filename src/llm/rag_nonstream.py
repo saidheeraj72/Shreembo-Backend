@@ -49,6 +49,8 @@ class RAGNonStreamingMixin:
                 rag_results = chunk["data"]
             elif chunk["type"] == "web_search":
                 web_results = chunk["data"]
+            elif chunk["type"] == "reasoning":
+                pass
             elif chunk["type"] == "chunk":
                 full_response += chunk["content"]
             elif chunk["type"] == "done":

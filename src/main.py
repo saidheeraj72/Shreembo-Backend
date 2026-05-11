@@ -200,4 +200,4 @@ app.include_router(share_links.router, prefix=f"{settings.api_prefix}/share-link
 app.include_router(chat.router, prefix=f"{settings.api_prefix}/chat", tags=["Chat"])
 app.include_router(limits.router, prefix=f"{settings.api_prefix}", tags=["Usage Limits"])
 app.include_router(email.router, prefix=f"{settings.api_prefix}/email", tags=["Email Writer"])
-app.include_router(meetings.router, prefix=f"{settings.api_prefix}/meetings", tags=["Meeting Transcriber"])
+app.include_router(meetings.router, prefix=f"{settings.api_prefix}/meetings", tags=["Meetings"])

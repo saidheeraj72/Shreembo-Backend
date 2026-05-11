@@ -127,13 +127,14 @@ class Settings(BaseSettings):
     EMBEDDING_DIMENSIONS: int = 1536
 
     # OpenAI Chat
-    OPENAI_CHAT_MODEL: str = "gpt-4.1-mini-2025-04-14"
+    OPENAI_CHAT_MODEL: str = "gpt-5.4-nano-2026-03-17"
     OPENAI_CHAT_MAX_TOKENS: int = 4096
-    OPENAI_CHAT_TEMPERATURE: float = 0.7
 
     # RAG Settings
-    RAG_TOP_K: int = 5
+    RAG_TOP_K: int = 8
     RAG_MAX_CONTEXT_LENGTH: int = 8000
+    RAG_RETRIEVAL_TOP_K_MULTIPLIER: int = 3   # over-fetch factor for reranking
+    RAG_MIN_SCORE: float = 0.20               # cosine similarity floor
     RAG_SYSTEM_PROMPT: str = """You are a helpful AI assistant for an enterprise document management system.
 
 When answering questions based on the provided context, you must:

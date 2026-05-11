@@ -1,42 +1,45 @@
 """
-Meeting Transcriber service — handles audio transcription and note generation.
-Uses OpenAI Whisper for transcription and GPT for note generation.
+Meeting service — handles transcription via Whisper and note generation via GPT.
 """
 import json
 import logging
-import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
+from uuid import UUID
 
-from openai import AsyncOpenAI, BadRequestError
+from openai import AsyncOpenAI
 
 from src.config import settings
 from src.core.database import db
+from src.llm.token_usage import token_usage_service
 
 logger = logging.getLogger(__name__)
 
-NOTES_SYSTEM_PROMPT = """You are an expert meeting analyst. Given a meeting transcript, generate structured meeting notes.
+NOTES_SYSTEM_PROMPT = """You are an expert meeting analyst. Given a meeting transcript, generate structured meeting notes in Granola style.
 
-You MUST respond in valid JSON format with exactly these keys:
+Respond in valid JSON with exactly these keys:
 {
-  "summary": "A concise 2-3 sentence summary of the meeting",
-  "key_points": ["Key point 1", "Key point 2", ...],
-  "action_items": ["Action item 1", "Action item 2", ...],
-  "decisions": ["Decision 1", "Decision 2", ...]
+  "summary": "2-4 sentence executive summary of the meeting",
+  "key_decisions": ["Decision 1", "Decision 2"],
+  "action_items": [
+    {"text": "Action description", "assignee": "Person name or null", "due_date": "Date or null", "completed": false}
+  ],
+  "follow_ups": ["Follow-up item 1"],
+  "key_topics": ["Topic 1", "Topic 2"]
 }
 
 Rules:
-- Summary should capture the main purpose and outcome of the meeting
-- Key points should be the most important topics discussed
-- Action items should be specific, actionable tasks mentioned (include who is responsible if mentioned)
-- Decisions should be concrete decisions that were made during the meeting
-- If no action items or decisions were explicitly made, return empty arrays
-- Keep each point concise but informative
-- Do not fabricate information not present in the transcript"""
+- summary: capture purpose, outcome, and next steps
+- key_decisions: concrete decisions made, not discussion points
+- action_items: specific tasks with responsible person if mentioned
+- follow_ups: items that need future attention but aren't immediate tasks
+- key_topics: main themes discussed (3-7 topics)
+- Do not fabricate information not in the transcript
+- Return empty arrays if no items found for a category"""
 
 
 class MeetingService:
-    """Handles meeting transcription and AI note generation."""
+    """Handles meeting lifecycle: creation, transcription, and note generation."""
 
     def __init__(self):
         self._client: AsyncOpenAI | None = None
@@ -47,271 +50,281 @@ class MeetingService:
             self._client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
         return self._client
 
-    async def create_meeting(self, user_id: str, title: str) -> dict:
-        """Create a new meeting session."""
-        now = datetime.now(timezone.utc).isoformat()
-        meeting_data = {
-            "id": str(uuid.uuid4()),
-            "user_id": user_id,
+    # --- CRUD ---
+
+    async def create_meeting(
+        self, user_id: UUID, org_id: Optional[UUID], title: str,
+        participant_count: int = 1, tags: list[str] | None = None,
+    ) -> dict:
+        data = {
+            "user_id": str(user_id),
+            "org_id": str(org_id) if org_id else None,
             "title": title,
             "status": "recording",
-            "duration": 0,
-            "transcript": [],
-            "notes": None,
-            "created_at": now,
-            "updated_at": now,
+            "participant_count": participant_count,
+            "tags": tags or [],
         }
+        result = db.admin.table("meetings").insert(data).execute()
+        return result.data[0]
 
-        response = (
+    async def get_meetings(
+        self, user_id: UUID, org_id: Optional[UUID] = None,
+        limit: int = 20, offset: int = 0,
+    ) -> list[dict]:
+        query = (
             db.admin.table("meetings")
-            .insert(meeting_data)
-            .execute()
-        )
-
-        return response.data[0] if response.data else meeting_data
-
-    async def get_meetings(self, user_id: str, limit: int = 20, offset: int = 0) -> list[dict]:
-        """Get user's meetings."""
-        response = (
-            db.admin.table("meetings")
-            .select("id, title, status, duration, created_at, updated_at")
-            .eq("user_id", user_id)
+            .select("*")
+            .eq("user_id", str(user_id))
+            .is_("deleted_at", "null")
             .order("created_at", desc=True)
             .range(offset, offset + limit - 1)
-            .execute()
         )
-        return response.data or []
+        if org_id:
+            query = query.eq("org_id", str(org_id))
+        result = query.execute()
+        return result.data or []
 
-    async def get_meeting(self, user_id: str, meeting_id: str) -> Optional[dict]:
-        """Get a single meeting with full details."""
-        response = (
+    async def get_meeting(self, user_id: UUID, meeting_id: str) -> dict | None:
+        result = (
             db.admin.table("meetings")
             .select("*")
             .eq("id", meeting_id)
-            .eq("user_id", user_id)
+            .eq("user_id", str(user_id))
+            .is_("deleted_at", "null")
+            .maybe_single()
+            .execute()
+        )
+        return result.data
+
+    async def get_transcript(self, meeting_id: str) -> list[dict]:
+        result = (
+            db.admin.table("meeting_transcript_chunks")
+            .select("*")
+            .eq("meeting_id", meeting_id)
+            .order("chunk_index", desc=False)
+            .execute()
+        )
+        return result.data or []
+
+    async def update_meeting(self, user_id: UUID, meeting_id: str, updates: dict) -> dict | None:
+        updates["updated_at"] = datetime.utcnow().isoformat()
+        result = (
+            db.admin.table("meetings")
+            .update(updates)
+            .eq("id", meeting_id)
+            .eq("user_id", str(user_id))
+            .execute()
+        )
+        return result.data[0] if result.data else None
+
+    async def delete_meeting(self, user_id: UUID, meeting_id: str) -> bool:
+        result = (
+            db.admin.table("meetings")
+            .update({"deleted_at": datetime.utcnow().isoformat()})
+            .eq("id", meeting_id)
+            .eq("user_id", str(user_id))
+            .execute()
+        )
+        return bool(result.data)
+
+    async def search_meetings(
+        self, user_id: UUID, org_id: Optional[UUID],
+        query: str, limit: int = 20, offset: int = 0,
+    ) -> list[dict]:
+        q = (
+            db.admin.table("meetings")
+            .select("*")
+            .eq("user_id", str(user_id))
+            .is_("deleted_at", "null")
+            .ilike("transcript_text", f"%{query}%")
+            .order("created_at", desc=True)
+            .range(offset, offset + limit - 1)
+        )
+        if org_id:
+            q = q.eq("org_id", str(org_id))
+        result = q.execute()
+        return result.data or []
+
+    # --- Transcription ---
+
+    async def transcribe_audio(
+        self, user_id: UUID, meeting_id: str,
+        audio_bytes: bytes, filename: str, content_type: str,
+    ) -> dict:
+        """Transcribe an audio chunk using OpenAI Whisper and store the result."""
+        # Verify meeting ownership
+        meeting = await self.get_meeting(user_id, meeting_id)
+        if not meeting:
+            raise ValueError("Meeting not found")
+        if meeting["status"] != "recording":
+            # Late chunks can arrive while end-meeting transitions status to
+            # processing/completed; ignore these instead of failing the request.
+            return {"transcript_chunk": "", "chunk_index": -1}
+
+        # Skip very small chunks (likely silence)
+        if len(audio_bytes) < 1000:
+            return {"transcript_chunk": "", "chunk_index": -1}
+
+        # Get next chunk index
+        existing = (
+            db.admin.table("meeting_transcript_chunks")
+            .select("chunk_index")
+            .eq("meeting_id", meeting_id)
+            .order("chunk_index", desc=True)
             .limit(1)
             .execute()
         )
-        if response.data and len(response.data) > 0:
-            return response.data[0]
-        return None
+        next_index = (existing.data[0]["chunk_index"] + 1) if existing.data else 0
 
-    async def save_transcript(
-        self, user_id: str, meeting_id: str, transcript: list[dict]
-    ) -> Optional[dict]:
-        """Save/overwrite the transcript for a meeting."""
-        meeting = await self.get_meeting(user_id, meeting_id)
-        if not meeting:
-            return None
+        # Determine file extension from content type
+        ext_map = {
+            "audio/webm": ".webm",
+            "audio/webm;codecs=opus": ".webm",
+            "audio/ogg": ".ogg",
+            "audio/ogg;codecs=opus": ".ogg",
+            "audio/mp4": ".mp4",
+            "audio/mpeg": ".mp3",
+        }
+        ext = ext_map.get(content_type, ".webm")
+        upload_filename = filename or f"chunk{ext}"
+        if "." not in upload_filename:
+            upload_filename = f"{upload_filename}{ext}"
 
-        now = datetime.now(timezone.utc).isoformat()
-        response = (
-            db.admin.table("meetings")
-            .update({"transcript": transcript, "updated_at": now})
-            .eq("id", meeting_id)
-            .eq("user_id", user_id)
-            .execute()
-        )
-        logger.info(
-            "Saved transcript for meeting %s (%d entries)", meeting_id, len(transcript)
-        )
-        return response.data[0] if response.data else None
-
-    async def end_meeting(
-        self,
-        user_id: str,
-        meeting_id: str,
-        duration: Optional[int] = None,
-        transcript: Optional[list[dict]] = None,
-    ) -> Optional[dict]:
-        """Mark a meeting as completed."""
-        meeting = await self.get_meeting(user_id, meeting_id)
-        if not meeting:
-            return None
-
-        now = datetime.now(timezone.utc).isoformat()
-        update_payload: dict = {"status": "completed", "updated_at": now}
-
-        if isinstance(duration, int) and duration >= 0:
-            update_payload["duration"] = duration
-
-        existing_transcript = meeting.get("transcript") or []
-        incoming_transcript = transcript or []
-        # Save client transcript if backend transcript is empty, or always
-        # overwrite if the client has data (client is the source of truth).
-        if incoming_transcript:
-            update_payload["transcript"] = incoming_transcript
-            logger.info(
-                "Saving %d transcript entries from client for meeting %s",
-                len(incoming_transcript),
-                meeting_id,
-            )
-
-        response = (
-            db.admin.table("meetings")
-            .update(update_payload)
-            .eq("id", meeting_id)
-            .eq("user_id", user_id)
-            .execute()
-        )
-        return response.data[0] if response.data else None
-
-    async def delete_meeting(self, user_id: str, meeting_id: str) -> bool:
-        """Delete a meeting."""
-        response = (
-            db.admin.table("meetings")
-            .delete()
-            .eq("id", meeting_id)
-            .eq("user_id", user_id)
-            .execute()
-        )
-        return bool(response.data)
-
-    @staticmethod
-    def _infer_audio_upload_meta(filename: str, content_type: Optional[str]) -> tuple[str, str]:
-        """Infer a stable filename/content-type pair for transcription uploads."""
-        filename_l = (filename or "").lower()
-        content_type_l = (content_type or "").lower()
-
-        # Prefer explicit container types from content-type, then filename hints.
-        if "ogg" in content_type_l or filename_l.endswith((".ogg", ".oga")):
-            return "chunk.ogg", "audio/ogg"
-        if "wav" in content_type_l or filename_l.endswith(".wav"):
-            return "chunk.wav", "audio/wav"
-        if "mpeg" in content_type_l or filename_l.endswith((".mp3", ".mpga", ".mpeg")):
-            return "chunk.mp3", "audio/mpeg"
-        if "mp4" in content_type_l or "m4a" in content_type_l or filename_l.endswith((".mp4", ".m4a")):
-            return "chunk.m4a", "audio/mp4"
-        if "webm" in content_type_l or filename_l.endswith(".webm"):
-            return "chunk.webm", "audio/webm"
-        if "flac" in content_type_l or filename_l.endswith(".flac"):
-            return "chunk.flac", "audio/flac"
-
-        # Safe default for browser MediaRecorder audio.
-        return "chunk.webm", "audio/webm"
-
-    async def transcribe_audio(
-        self,
-        user_id: str,
-        meeting_id: str,
-        audio_bytes: bytes,
-        filename: str,
-        content_type: Optional[str] = None,
-    ) -> str:
-        """Transcribe an audio chunk using OpenAI Whisper."""
-        # Skip chunks that are too small (no meaningful audio)
-        if len(audio_bytes) < 1000:
-            logger.warning("Audio chunk too small (%d bytes), skipping", len(audio_bytes))
-            return ""
-
-        upload_filename, upload_content_type = self._infer_audio_upload_meta(filename, content_type)
         try:
-            transcript = await self.client.audio.transcriptions.create(
+            transcription = await self.client.audio.transcriptions.create(
                 model="whisper-1",
-                file=(upload_filename, audio_bytes, upload_content_type),
+                file=(upload_filename, audio_bytes, content_type),
                 response_format="text",
             )
-        except BadRequestError as e:
-            error_text = str(e)
-            if "Invalid file format" in error_text:
-                logger.warning(
-                    "Skipping malformed audio chunk for meeting %s (filename=%s, content_type=%s, size=%d)",
-                    meeting_id,
-                    filename,
-                    content_type,
-                    len(audio_bytes),
-                )
-                return ""
-            raise
+        except Exception as e:
+            logger.error("Whisper transcription failed: %s", e)
+            return {"transcript_chunk": "", "chunk_index": next_index}
 
-        transcript_text = transcript.strip() if isinstance(transcript, str) else str(transcript).strip()
+        transcript_text = transcription.strip() if isinstance(transcription, str) else str(transcription).strip()
 
         if not transcript_text:
-            return ""
+            return {"transcript_chunk": "", "chunk_index": next_index}
 
-        # Append to meeting transcript in DB
-        meeting = await self.get_meeting(user_id, meeting_id)
-        if meeting:
-            existing_transcript = meeting.get("transcript") or []
-            new_entry = {
-                "id": str(uuid.uuid4()),
-                "timestamp": len(existing_transcript) * 10.0,  # approximate timestamp
-                "text": transcript_text,
-                "is_final": True,
-            }
-            existing_transcript.append(new_entry)
+        # Calculate approximate timestamp
+        timestamp_seconds = next_index * 5.0  # 5 second chunks
 
-            now = datetime.now(timezone.utc).isoformat()
-            db.admin.table("meetings").update({
-                "transcript": existing_transcript,
-                "updated_at": now,
-            }).eq("id", meeting_id).eq("user_id", user_id).execute()
+        # Store transcript chunk
+        db.admin.table("meeting_transcript_chunks").insert({
+            "meeting_id": meeting_id,
+            "chunk_index": next_index,
+            "timestamp_seconds": timestamp_seconds,
+            "text": transcript_text,
+        }).execute()
 
-        return transcript_text
+        return {"transcript_chunk": transcript_text, "chunk_index": next_index}
 
-    async def generate_notes(self, user_id: str, meeting_id: str) -> dict:
-        """Generate AI meeting notes from the transcript."""
+    # --- End Meeting & Note Generation ---
+
+    async def end_meeting(
+        self, user_id: UUID, meeting_id: str,
+        duration: int | None = None, generate_notes: bool = True,
+    ) -> dict:
+        """End a meeting: build full transcript, optionally generate notes."""
         meeting = await self.get_meeting(user_id, meeting_id)
         if not meeting:
             raise ValueError("Meeting not found")
 
-        transcript_entries = meeting.get("transcript") or []
-        if not transcript_entries:
+        # Set status to processing
+        await self.update_meeting(user_id, meeting_id, {"status": "processing"})
+
+        # Build full transcript text from chunks
+        chunks = await self.get_transcript(meeting_id)
+        full_transcript = " ".join(c["text"] for c in chunks if c["text"])
+
+        updates: dict = {
+            "transcript_text": full_transcript,
+            "status": "processing",
+        }
+        if duration is not None:
+            updates["duration"] = duration
+
+        await self.update_meeting(user_id, meeting_id, updates)
+
+        # Generate notes if requested and there's transcript content
+        if generate_notes and full_transcript.strip():
+            try:
+                notes = await self._generate_notes(
+                    user_id=user_id,
+                    org_id=UUID(meeting["org_id"]) if meeting.get("org_id") else None,
+                    transcript=full_transcript,
+                )
+                await self.update_meeting(user_id, meeting_id, {
+                    "notes": json.dumps(notes) if isinstance(notes, dict) else notes,
+                    "status": "completed",
+                })
+            except Exception as e:
+                logger.exception("Note generation failed for meeting %s: %s", meeting_id, e)
+                await self.update_meeting(user_id, meeting_id, {"status": "failed"})
+        else:
+            await self.update_meeting(user_id, meeting_id, {"status": "completed"})
+
+        return await self.get_meeting(user_id, meeting_id)
+
+    async def regenerate_notes(self, user_id: UUID, meeting_id: str) -> dict:
+        """Regenerate notes for an existing meeting."""
+        meeting = await self.get_meeting(user_id, meeting_id)
+        if not meeting:
+            raise ValueError("Meeting not found")
+
+        transcript = meeting.get("transcript_text", "")
+        if not transcript.strip():
             raise ValueError("No transcript available to generate notes from")
 
-        # Build transcript text
-        transcript_text = "\n".join(
-            f"[{entry.get('timestamp', 0):.0f}s] {entry['text']}"
-            for entry in transcript_entries
-        )
+        await self.update_meeting(user_id, meeting_id, {"status": "processing"})
 
-        # Update status to processing
-        now = datetime.now(timezone.utc).isoformat()
-        db.admin.table("meetings").update({
-            "status": "processing",
-            "updated_at": now,
-        }).eq("id", meeting_id).eq("user_id", user_id).execute()
+        try:
+            notes = await self._generate_notes(
+                user_id=user_id,
+                org_id=UUID(meeting["org_id"]) if meeting.get("org_id") else None,
+                transcript=transcript,
+            )
+            await self.update_meeting(user_id, meeting_id, {
+                "notes": json.dumps(notes) if isinstance(notes, dict) else notes,
+                "status": "completed",
+            })
+        except Exception as e:
+            logger.exception("Note regeneration failed for meeting %s: %s", meeting_id, e)
+            await self.update_meeting(user_id, meeting_id, {"status": "failed"})
+            raise
 
-        logger.info("Generating meeting notes for meeting %s", meeting_id)
+        return await self.get_meeting(user_id, meeting_id)
+
+    async def _generate_notes(
+        self, user_id: UUID, org_id: Optional[UUID], transcript: str,
+    ) -> dict:
+        """Generate structured meeting notes from transcript using GPT."""
+        # Truncate very long transcripts to fit context window
+        max_chars = 100_000
+        if len(transcript) > max_chars:
+            transcript = transcript[:max_chars] + "\n\n[Transcript truncated due to length]"
 
         response = await self.client.chat.completions.create(
             model=settings.OPENAI_CHAT_MODEL,
             messages=[
                 {"role": "system", "content": NOTES_SYSTEM_PROMPT},
-                {"role": "user", "content": f"Generate meeting notes from this transcript:\n\n{transcript_text}"},
+                {"role": "user", "content": f"Generate structured meeting notes from this transcript:\n\n{transcript}"},
             ],
             max_tokens=settings.OPENAI_CHAT_MAX_TOKENS,
             temperature=0.3,
             response_format={"type": "json_object"},
         )
 
-        notes_text = response.choices[0].message.content or "{}"
-        notes = json.loads(notes_text)
+        # Track token usage
+        if response.usage:
+            await token_usage_service.track_usage(
+                user_id=user_id,
+                org_id=org_id,
+                prompt_tokens=response.usage.prompt_tokens,
+                completion_tokens=response.usage.completion_tokens,
+            )
 
-        # Ensure all required fields exist
-        notes = {
-            "summary": notes.get("summary", ""),
-            "key_points": notes.get("key_points", []),
-            "action_items": notes.get("action_items", []),
-            "decisions": notes.get("decisions", []),
-        }
-
-        # Save notes to DB
-        now = datetime.now(timezone.utc).isoformat()
-        db.admin.table("meetings").update({
-            "notes": notes,
-            "status": "completed",
-            "updated_at": now,
-        }).eq("id", meeting_id).eq("user_id", user_id).execute()
-
-        return notes
-
-    async def get_transcript(self, user_id: str, meeting_id: str) -> list[dict]:
-        """Get the transcript for a meeting."""
-        meeting = await self.get_meeting(user_id, meeting_id)
-        if not meeting:
-            raise ValueError("Meeting not found")
-        return meeting.get("transcript") or []
+        content = response.choices[0].message.content or "{}"
+        return json.loads(content)
 
 
 # Module-level singleton

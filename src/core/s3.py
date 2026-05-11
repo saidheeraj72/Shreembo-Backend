@@ -1,4 +1,4 @@
-"""AWS S3 client for document storage."""
+"""S3-compatible storage client (Supabase Storage)."""
 import uuid
 from typing import Optional, BinaryIO
 import logging
@@ -22,7 +22,10 @@ class S3Client:
                 aws_secret_access_key=settings.AWS_SECRET_ACCESS_KEY,
                 region_name=settings.AWS_S3_REGION,
                 endpoint_url=settings.AWS_S3_ENDPOINT_URL,
-                config=Config(signature_version='s3v4')
+                config=Config(
+                    signature_version='s3v4',
+                    s3={'addressing_style': 'path'},  # required for Supabase S3
+                )
             )
         return self._client
 
@@ -34,7 +37,7 @@ class S3Client:
     async def upload_file(self, file_obj: BinaryIO, key: str, content_type: str) -> dict:
         self.client.upload_fileobj(
             file_obj, settings.AWS_S3_BUCKET, key,
-            ExtraArgs={'ContentType': content_type, 'ServerSideEncryption': 'AES256'}
+            ExtraArgs={'ContentType': content_type}
         )
         return {'bucket': settings.AWS_S3_BUCKET, 'key': key, 'region': settings.AWS_S3_REGION}
 
@@ -82,7 +85,6 @@ class S3Client:
                 CopySource=copy_source,
                 Bucket=settings.AWS_S3_BUCKET,
                 Key=dest_key,
-                ServerSideEncryption='AES256'
             )
             return True
         except Exception as e:
@@ -95,7 +97,7 @@ class S3Client:
         file_obj = BytesIO(file_bytes)
         self.client.upload_fileobj(
             file_obj, settings.AWS_S3_BUCKET, key,
-            ExtraArgs={'ContentType': content_type, 'ServerSideEncryption': 'AES256'}
+            ExtraArgs={'ContentType': content_type}
         )
         return {'bucket': settings.AWS_S3_BUCKET, 'key': key, 'region': settings.AWS_S3_REGION}
 
