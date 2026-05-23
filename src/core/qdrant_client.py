@@ -164,6 +164,49 @@ class QdrantVectorClient:
             logger.error("Qdrant delete error: %s", e)
             return False
 
+    async def scroll_by_document(
+        self,
+        document_id: str,
+        namespace: str,
+        limit: int = 100,
+        index_name: Optional[str] = None,
+    ) -> List[Dict]:
+        """Fetch all chunks for a document, returned sorted by chunk_index."""
+        try:
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+
+            collection = self._get_collection_name(index_name)
+            self._ensure_collection(collection)
+
+            scroll_filter = Filter(
+                must=[
+                    FieldCondition(key="namespace", match=MatchValue(value=namespace)),
+                    FieldCondition(key="document_id", match=MatchValue(value=document_id)),
+                ]
+            )
+
+            points, _ = self.client.scroll(
+                collection_name=collection,
+                scroll_filter=scroll_filter,
+                limit=limit,
+                with_payload=True,
+                with_vectors=False,
+            )
+
+            chunks = []
+            for point in points:
+                payload = dict(point.payload) if point.payload else {}
+                chunks.append({
+                    "chunk_index": payload.get("chunk_index", 0),
+                    "chunk_text": payload.get("chunk_text", ""),
+                })
+            chunks.sort(key=lambda x: x["chunk_index"])
+            return chunks
+
+        except Exception as e:
+            logger.error("Qdrant scroll_by_document error: %s", e)
+            return []
+
     async def copy_embeddings(
         self,
         source_doc_id: str,

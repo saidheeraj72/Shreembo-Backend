@@ -266,11 +266,24 @@ class ChatConnectionManager:
                     })
 
                 elif chunk["type"] == "tool_done":
-                    if chunk["name"] == "list_documents" and chunk.get("data"):
+                    if chunk["name"] in ("list_documents", "find_document_by_name") and chunk.get("data"):
                         await websocket.send_json({
                             "type": "document_list",
                             "session_id": str(session_id),
                             "data": chunk["data"],
+                        })
+                    elif chunk["name"] == "get_document_content":
+                        await websocket.send_json({
+                            "type": "document_content",
+                            "session_id": str(session_id),
+                            "document_name": chunk.get("document_name", ""),
+                            "chunk_count": chunk.get("count", 0),
+                        })
+                    elif chunk["name"] == "calculate":
+                        await websocket.send_json({
+                            "type": "calculation_result",
+                            "session_id": str(session_id),
+                            "result": chunk.get("result", ""),
                         })
                     # other tool_done events: frontend clears tool indicator on rag_context
 
