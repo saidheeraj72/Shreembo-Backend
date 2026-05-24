@@ -74,12 +74,13 @@ class SessionDocumentUploadMixin:
         org_id: Optional[UUID],
         filename: str,
         content_type: str,
-        size_bytes: int
+        size_bytes: int,
+        file_bytes: bytes = None
     ) -> dict:
         """
         Initialize a document upload for a chat session.
 
-        Returns presigned URL for S3 upload. Document record is created
+        Uploads file to Supabase Storage directly. Document record is created
         only after processing completes successfully.
         """
         # Generate S3 key
@@ -87,8 +88,9 @@ class SessionDocumentUploadMixin:
             user_id, session_id, filename
         )
 
-        # Get presigned upload URL
-        presigned = await s3_client.get_presigned_upload_url(s3_key, content_type)
+        # Upload to Supabase Storage if file bytes provided
+        if file_bytes:
+            await s3_client.upload_file_bytes(file_bytes, s3_key, content_type)
 
         # Extract file extension
         ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else None
@@ -96,7 +98,6 @@ class SessionDocumentUploadMixin:
         # Return upload info - document will be created after processing
         return {
             "upload_id": str(uuid4()),
-            "upload_url": presigned["upload_url"],
             "s3_key": s3_key,
             "session_id": str(session_id),
             "user_id": str(user_id),

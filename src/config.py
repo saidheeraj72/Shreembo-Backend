@@ -109,12 +109,8 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_FILE: Optional[str] = None
 
-    # AWS S3
-    AWS_ACCESS_KEY_ID: Optional[str] = None
-    AWS_SECRET_ACCESS_KEY: Optional[str] = None
-    AWS_S3_BUCKET: Optional[str] = None
-    AWS_S3_REGION: str 
-    AWS_S3_ENDPOINT_URL: Optional[str] = None  # For S3-compatible services
+    # Supabase Storage
+    SUPABASE_STORAGE_BUCKET: str = "shreembo"
 
     # Qdrant
     QDRANT_PATH: str = "./qdrant_data"

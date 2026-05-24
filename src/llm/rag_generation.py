@@ -268,7 +268,7 @@ async def _list_accessible_documents(
                 .select("id, filename, file_type, embedding_status")
                 .eq("session_id", str(session_id))
                 .eq("embedding_status", "completed")
-                .order("created_at", desc=True)
+                .order("uploaded_at", desc=True)
                 .range(0, limit - 1)
                 .execute()
             )

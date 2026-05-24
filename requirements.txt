@@ -14,9 +14,6 @@ redis
 python-jose[cryptography]
 passlib[bcrypt]
 
-# AWS S3
-boto3
-botocore
 
 # Qdrant Vector Database
 qdrant-client
