@@ -34,8 +34,11 @@ async def add_group_members(
         added_by=user_id,
     )
 
+    updated_group = await group_service.get_group(org_id, group_id)
+
     return {
         "message": "Members added successfully",
+        "group": updated_group,
     }
 
 
@@ -65,6 +68,9 @@ async def remove_group_members(
         removed_by=user_id,
     )
 
+    updated_group = await group_service.get_group(org_id, group_id)
+
     return {
         "message": "Members removed successfully",
+        "group": updated_group,
     }

@@ -1,18 +1,9 @@
 """Auto-split admin service part."""
-from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List
 from uuid import UUID
-import secrets
-import logging
 
 from src.core.database import db
-from src.core.cache import cache
-from src.core.exceptions import NotFoundError, ConflictError, AuthorizationError
-from src.audit.service import audit_service
-from src.email.service import email_service
-from src.models.audit import AuditAction
-
-logger = logging.getLogger(__name__)
+from src.core.exceptions import NotFoundError
 
 
 class AdminRolesReadMixin:
@@ -27,8 +18,6 @@ class AdminRolesReadMixin:
         Returns:
             List of roles with permission and user counts
         """
-        logger.info(f"[ROLES] Fetching roles for org_id: {org_id}")
-
         response = (
             db.admin.table("roles")
             .select("*")
@@ -37,43 +26,44 @@ class AdminRolesReadMixin:
             .execute()
         )
 
-        logger.info(f"[ROLES] Found {len(response.data)} roles in database")
+        role_ids = [role["id"] for role in response.data]
+        if not role_ids:
+            return []
+
+        # Batch fetch all role permissions in one query
+        all_perms_response = (
+            db.admin.table("role_permissions")
+            .select("role_id, permission_id")
+            .in_("role_id", role_ids)
+            .execute()
+        )
+
+        perms_by_role: dict[str, list] = {}
+        for p in (all_perms_response.data or []):
+            perms_by_role.setdefault(p["role_id"], []).append(p["permission_id"])
+
+        # Batch fetch user counts per role in one query
+        all_members_response = (
+            db.admin.table("organization_members")
+            .select("role_id")
+            .in_("role_id", role_ids)
+            .eq("status", "active")
+            .execute()
+        )
+
+        user_count_by_role: dict[str, int] = {}
+        for m in (all_members_response.data or []):
+            user_count_by_role[m["role_id"]] = user_count_by_role.get(m["role_id"], 0) + 1
 
         roles = []
         for role in response.data:
-            logger.info(f"[ROLES] Processing role: {role['name']} (id: {role['id']})")
-
-            # Get permissions with IDs
-            perm_response = (
-                db.admin.table("role_permissions")
-                .select("permission_id", count="exact")
-                .eq("role_id", role["id"])
-                .execute()
-            )
-
-            logger.info(f"[ROLES] Role '{role['name']}': count={perm_response.count}, data_length={len(perm_response.data or [])}")
-
-            # Get user count
-            user_count = (
-                db.admin.table("organization_members")
-                .select("user_id", count="exact")
-                .eq("role_id", role["id"])
-                .eq("status", "active")
-                .execute()
-            )
-
-            # Extract permission IDs for UI
-            permission_ids = [p["permission_id"] for p in (perm_response.data or [])]
-            logger.info(f"[ROLES] Role '{role['name']}': permission_ids={permission_ids[:5]}... (showing first 5)")
-
+            permission_ids = perms_by_role.get(role["id"], [])
             roles.append({
                 **role,
-                "permission_count": perm_response.count or 0,
-                "permission_ids": permission_ids,  # Include IDs in list view
-                "user_count": user_count.count or 0,
+                "permission_count": len(permission_ids),
+                "permission_ids": permission_ids,
+                "user_count": user_count_by_role.get(role["id"], 0),
             })
-
-        logger.info(f"[ROLES] Returning {len(roles)} roles with permission data")
         return roles
 
     @staticmethod
@@ -91,9 +81,6 @@ class AdminRolesReadMixin:
         Raises:
             NotFoundError: If role not found
         """
-        logger.info(f"[ROLE_DETAIL] Fetching role {role_id} for org {org_id}")
-
-        # Get role
         role_response = (
             db.admin.table("roles")
             .select("*")
@@ -106,9 +93,6 @@ class AdminRolesReadMixin:
         if not role_response.data:
             raise NotFoundError("Role not found")
 
-        logger.info(f"[ROLE_DETAIL] Found role: {role_response.data['name']}")
-
-        # Get permissions
         perms_response = (
             db.admin.table("role_permissions")
             .select("permission_id, permissions(*, permission_modules(*))")
@@ -116,9 +100,6 @@ class AdminRolesReadMixin:
             .execute()
         )
 
-        logger.info(f"[ROLE_DETAIL] Permissions query returned {len(perms_response.data or [])} records")
-
-        # Get user count
         user_count = (
             db.admin.table("organization_members")
             .select("user_id", count="exact")
@@ -131,27 +112,18 @@ class AdminRolesReadMixin:
         permission_ids = []
 
         for p in perms_response.data or []:
-            # Add permission ID
             permission_ids.append(p["permission_id"])
-
-            # Add full permission details if available
             if p.get("permissions"):
                 permissions.append({
                     **p["permissions"],
                     "module": p["permissions"].get("permission_modules", {}),
                 })
 
-        logger.info(f"[ROLE_DETAIL] Extracted {len(permission_ids)} permission IDs")
-        logger.info(f"[ROLE_DETAIL] Permission IDs: {permission_ids[:5]}... (first 5)")
-
-        result = {
+        return {
             **role_response.data,
             "permissions": permissions,
-            "permission_ids": permission_ids,  # Simple array of IDs for UI checkboxes
+            "permission_ids": permission_ids,
             "permission_count": len(permissions),
             "user_count": user_count.count or 0,
         }
-
-        logger.info(f"[ROLE_DETAIL] Returning role with {result['permission_count']} permissions")
-        return result
 

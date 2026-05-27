@@ -149,28 +149,3 @@ async def delete_role(
     return {
         "message": "Role deleted successfully",
     }
-
-
-@router.get(
-    "/permissions",
-    response_model=dict,
-    dependencies=[Depends(require_permission("roles", "view"))],
-)
-async def list_permissions(
-    org_context: dict = Depends(get_current_org_context),
-):
-    """
-    List all available permissions grouped by module.
-
-    **Requires:** roles.view permission
-
-    Use this to populate role permission selection UI.
-    """
-    modules = await admin_service.get_all_permissions()
-
-    return {
-        "total_modules": len(modules),
-        "modules": modules,
-    }
-
-

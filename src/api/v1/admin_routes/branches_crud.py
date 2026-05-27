@@ -34,25 +34,6 @@ async def list_branches(
     }
 
 
-@router.get(
-    "/branches/{branch_id}",
-    response_model=dict,
-    dependencies=[Depends(require_permission("branches", "view"))],
-)
-async def get_branch(
-    branch_id: UUID,
-    org_context: dict = Depends(get_current_org_context),
-):
-    """
-    Get branch details including assigned users.
-
-    **Requires:** branches.view permission
-    """
-    org_id = UUID(org_context["org_id"])
-    branch = await admin_service.get_branch(org_id, branch_id)
-    return branch
-
-
 @router.post(
     "/branches",
     response_model=dict,
