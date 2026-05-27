@@ -2,7 +2,7 @@ from typing import Optional, List
 from uuid import UUID
 from datetime import date
 import logging
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, Query, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect, Query, HTTPException, BackgroundTasks, UploadFile, File, Form
 
 logger = logging.getLogger(__name__)
 
@@ -46,14 +46,15 @@ async def get_session_documents(
     return documents
 
 
-@router.post("/sessions/{session_id}/documents/upload/init", response_model=SessionDocumentUploadResponse)
-async def init_document_upload(
+@router.post("/sessions/{session_id}/documents/upload/direct")
+async def direct_document_upload(
     session_id: UUID,
-    data: SessionDocumentUploadInit,
+    file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = None,
     user_id: UUID = Depends(get_current_user_id),
     org_context: dict = Depends(get_current_org_context)
 ):
-    """Initialize document upload for a chat session."""
+    """Upload a document directly to a chat session via Supabase Storage."""
     org_id = org_context.get("org_id")
     session = await chat_service.get_session(
         session_id=session_id,
@@ -63,41 +64,34 @@ async def init_document_upload(
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # Only session owner can upload
     if str(session["user_id"]) != str(user_id):
         raise HTTPException(status_code=403, detail="Only session owner can upload documents")
 
-    result = await session_document_service.init_upload(
+    file_bytes = await file.read()
+    content_type = file.content_type or "application/octet-stream"
+
+    # Upload to Supabase Storage and get metadata
+    init_result = await session_document_service.init_upload(
         session_id=session_id,
         user_id=user_id,
         org_id=UUID(org_id) if org_id else None,
-        filename=data.filename,
-        content_type=data.content_type,
-        size_bytes=data.size_bytes
+        filename=file.filename,
+        content_type=content_type,
+        size_bytes=len(file_bytes),
+        file_bytes=file_bytes
     )
-    return result
 
-
-@router.post("/sessions/{session_id}/documents/complete")
-async def complete_document_upload(
-    session_id: UUID,
-    data: SessionDocumentUploadComplete,
-    background_tasks: BackgroundTasks,
-    user_id: UUID = Depends(get_current_user_id),
-    org_context: dict = Depends(get_current_org_context)
-):
-    """Complete document upload and trigger embedding."""
-    org_id = org_context.get("org_id")
+    # Complete upload and trigger embedding
     try:
         result = await session_document_service.complete_upload(
             session_id=session_id,
             user_id=user_id,
             org_id=UUID(org_id) if org_id else None,
-            s3_key=data.s3_key,
-            filename=data.filename,
-            file_type=data.file_type,
-            file_size=data.file_size,
-            mime_type=data.mime_type,
+            s3_key=init_result["s3_key"],
+            filename=file.filename,
+            file_type=init_result["file_type"],
+            file_size=len(file_bytes),
+            mime_type=content_type,
             background_tasks=background_tasks
         )
         return {"success": True, **result}

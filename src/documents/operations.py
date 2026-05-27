@@ -111,7 +111,7 @@ class DocumentOperationsMixin:
 
         if not doc or not doc.get("s3_key"):
             return None
-        return await s3_client.get_presigned_download_url(doc["s3_key"], doc.get("name"))
+        return await s3_client.get_signed_download_url(doc["s3_key"])
 
     @staticmethod
     async def get_view_url(doc_id: UUID, org_id: Optional[UUID]) -> Optional[str]:
@@ -135,4 +135,4 @@ class DocumentOperationsMixin:
 
         if not doc or not doc.get("s3_key"):
             return None
-        return await s3_client.get_presigned_view_url(doc["s3_key"], doc.get("mime_type"))
+        return await s3_client.get_signed_view_url(doc["s3_key"])

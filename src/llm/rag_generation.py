@@ -6,8 +6,11 @@ Agentic RAG generation pipeline:
 """
 from typing import Optional, List, Dict, Any, AsyncGenerator
 from uuid import UUID
+import ast
 import json
 import logging
+import math
+import operator
 
 from src.core.openai_client import openai_client
 from src.core.database import db
@@ -96,17 +99,96 @@ _LIST_DOCUMENTS_TOOL = {
     },
 }
 
+_FIND_DOCUMENT_BY_NAME_TOOL = {
+    "type": "function",
+    "name": "find_document_by_name",
+    "description": (
+        "Search for documents by filename, description, or tags — metadata only, not content. "
+        "Use when the user references a document by name (e.g. 'the contract', 'my Q3 report') "
+        "to confirm it exists and get its exact name before reading it. "
+        "Unlike search_documents (which searches content), this searches file metadata."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Term to match against document names, descriptions, and tags.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max results (1–20). Default 10.",
+                "default": 10,
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+_GET_DOCUMENT_CONTENT_TOOL = {
+    "type": "function",
+    "name": "get_document_content",
+    "description": (
+        "Retrieve the full text of a specific document by name. "
+        "Use when the user asks to read, summarize, or deeply analyze a specific file. "
+        "Prefer search_documents when you only need relevant excerpts."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "document_name": {
+                "type": "string",
+                "description": "Name or partial name of the document to retrieve.",
+            },
+            "max_chunks": {
+                "type": "integer",
+                "description": "Maximum text chunks to return (1–100). Default 40.",
+                "default": 40,
+            },
+        },
+        "required": ["document_name"],
+    },
+}
+
+_CALCULATE_TOOL = {
+    "type": "function",
+    "name": "calculate",
+    "description": (
+        "Evaluate a mathematical expression and return the exact result. "
+        "Use for any arithmetic, percentage, or numeric computation — do NOT estimate in your head. "
+        "Supports: +, -, *, /, ** (power), % (modulo), abs(), round(), min(), max(), "
+        "sqrt(), log(), ceil(), floor(), and constants pi and e."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "expression": {
+                "type": "string",
+                "description": (
+                    "Math expression to evaluate, e.g. '42500 * 0.15' or 'round(1234567 / 12, 2)'."
+                ),
+            },
+        },
+        "required": ["expression"],
+    },
+}
+
 # Lightweight routing prompt — only used in Phase 1
 _TOOL_ROUTING_INSTRUCTIONS = """\
 Decide which tools to call in order to answer the user's question accurately.
 
 Guidelines:
-- Call list_documents when the user asks what files or documents are available, \
-or when you need to discover document names before doing a targeted search.
+- Call find_document_by_name when the user references a document by name or topic \
+to confirm it exists and get its exact filename before reading it.
+- Call get_document_content when the user wants to read, analyze, or summarize a \
+specific document and you know (or just found) its name. Retrieves the full text.
+- Call list_documents when the user asks for a broad overview of all available files.
 - Call search_documents when the answer likely lives in the user's uploaded documents \
-(reports, policies, contracts, data, etc.). You may call it several times with \
-different precise queries to cover different aspects of a complex question.
+(reports, policies, contracts, data, etc.). Call it several times with different \
+precise queries to cover complex questions.
 - Call search_web only for real-time or general knowledge clearly absent from documents.
+- Call calculate for any arithmetic, percentage, or numeric computation needed to answer \
+the user — never approximate numbers in your head.
 - Do NOT call any tool for greetings, thanks, simple follow-ups, or questions you can \
 answer from the conversation history alone.
 - Choose top_k deliberately: 5–8 for narrow lookups, 10–15 for broad topics."""
@@ -186,7 +268,7 @@ async def _list_accessible_documents(
                 .select("id, filename, file_type, embedding_status")
                 .eq("session_id", str(session_id))
                 .eq("embedding_status", "completed")
-                .order("created_at", desc=True)
+                .order("uploaded_at", desc=True)
                 .range(0, limit - 1)
                 .execute()
             )
@@ -206,6 +288,258 @@ async def _list_accessible_documents(
     return {"documents": docs, "count": len(docs), "limit": limit, "offset": offset}
 
 
+async def _find_document_by_name(
+    user_id: UUID,
+    org_id: Optional[UUID],
+    session_id: Optional[UUID],
+    document_source: str,
+    query: str,
+    limit: int = 10,
+) -> Dict[str, Any]:
+    """Search storage_nodes by filename, description, or tags (metadata only)."""
+    limit = max(1, min(limit, 20))
+    namespace_is_org = org_id and document_source != "personal"
+    docs: List[dict] = []
+    seen_ids: set = set()
+
+    def _base_query(ilike_col: str):
+        q = (
+            db.admin.table("storage_nodes")
+            .select("id, name, file_extension, description, tags, embedding_status")
+            .eq("status", "active")
+            .eq("node_type", "file")
+            .ilike(ilike_col, f"%{query}%")
+        )
+        if namespace_is_org:
+            return q.eq("org_id", str(org_id))
+        return q.eq("owner_id", str(user_id)).is_("org_id", "null")
+
+    try:
+        for col in ("name", "description"):
+            if len(docs) >= limit:
+                break
+            result = _base_query(col).limit(limit).execute()
+            for d in (result.data or []):
+                if d["id"] not in seen_ids:
+                    seen_ids.add(d["id"])
+                    docs.append({
+                        "id": d["id"],
+                        "name": d["name"],
+                        "type": d.get("file_extension") or "unknown",
+                        "description": d.get("description") or "",
+                        "tags": d.get("tags") or [],
+                        "embedding_status": d.get("embedding_status") or "unknown",
+                        "source": "organization" if namespace_is_org else "personal",
+                    })
+    except Exception as e:
+        logger.error("find_document_by_name: DB query failed: %s", e)
+        return {"error": str(e), "documents": [], "count": 0, "query": query}
+
+    if session_id and len(docs) < limit:
+        try:
+            sess_result = (
+                db.admin.table("session_documents")
+                .select("id, filename, file_type, embedding_status")
+                .eq("session_id", str(session_id))
+                .ilike("filename", f"%{query}%")
+                .eq("embedding_status", "completed")
+                .limit(limit - len(docs))
+                .execute()
+            )
+            for d in (sess_result.data or []):
+                if d["id"] not in seen_ids:
+                    seen_ids.add(d["id"])
+                    docs.append({
+                        "id": d["id"],
+                        "name": d["filename"],
+                        "type": d.get("file_type") or "unknown",
+                        "description": "",
+                        "tags": [],
+                        "embedding_status": "completed",
+                        "source": "session",
+                    })
+        except Exception as e:
+            logger.error("find_document_by_name: session docs query failed: %s", e)
+
+    return {"documents": docs[:limit], "count": len(docs[:limit]), "query": query}
+
+
+async def _get_document_content(
+    user_id: UUID,
+    org_id: Optional[UUID],
+    session_id: Optional[UUID],
+    document_source: str,
+    document_name: str,
+    max_chunks: int = 40,
+) -> Dict[str, Any]:
+    """Retrieve all text chunks for a named document from Qdrant."""
+    from src.core.qdrant_client import qdrant_client
+
+    max_chunks = max(1, min(max_chunks, 100))
+    namespace_is_org = org_id and document_source != "personal"
+
+    # Locate document in storage_nodes by partial name match
+    try:
+        q = (
+            db.admin.table("storage_nodes")
+            .select("id, name, file_extension")
+            .ilike("name", f"%{document_name}%")
+            .eq("status", "active")
+            .eq("node_type", "file")
+        )
+        if namespace_is_org:
+            q = q.eq("org_id", str(org_id))
+        else:
+            q = q.eq("owner_id", str(user_id)).is_("org_id", "null")
+
+        result = q.limit(5).execute()
+        matches = result.data or []
+    except Exception as e:
+        logger.error("get_document_content: DB lookup failed: %s", e)
+        return {"error": f"Document lookup failed: {e}", "chunks": [], "document_name": document_name}
+
+    # Also check session documents
+    if not matches and session_id:
+        try:
+            sess_result = (
+                db.admin.table("session_documents")
+                .select("id, filename")
+                .eq("session_id", str(session_id))
+                .ilike("filename", f"%{document_name}%")
+                .eq("embedding_status", "completed")
+                .limit(1)
+                .execute()
+            )
+            if sess_result.data:
+                d = sess_result.data[0]
+                chunks = await qdrant_client.scroll_by_document(
+                    document_id=d["id"],
+                    namespace=str(user_id),
+                    limit=max_chunks,
+                    index_name=settings.QDRANT_SESSIONS_COLLECTION,
+                )
+                return {
+                    "document_id": d["id"],
+                    "document_name": d["filename"],
+                    "chunks": chunks,
+                    "total_chunks": len(chunks),
+                    "source": "session",
+                }
+        except Exception as e:
+            logger.error("get_document_content: session doc lookup failed: %s", e)
+
+    if not matches:
+        return {
+            "error": f"No document found matching '{document_name}'",
+            "chunks": [],
+            "document_name": document_name,
+        }
+
+    doc = matches[0]
+    doc_id = doc["id"]
+    real_name = doc["name"]
+
+    # Permission check for org documents
+    if namespace_is_org:
+        accessible = await RAGService.get_accessible_documents_for_rag(user_id, org_id, [doc_id])
+        if not accessible:
+            return {
+                "error": f"Access denied to '{real_name}'",
+                "chunks": [],
+                "document_name": real_name,
+            }
+
+    namespace = str(org_id) if namespace_is_org else str(user_id)
+    chunks = await qdrant_client.scroll_by_document(
+        document_id=doc_id,
+        namespace=namespace,
+        limit=max_chunks,
+    )
+
+    return {
+        "document_id": doc_id,
+        "document_name": real_name,
+        "chunks": chunks,
+        "total_chunks": len(chunks),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Safe math calculator
+# ---------------------------------------------------------------------------
+
+_CALC_OPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.Pow: operator.pow,
+    ast.Mod: operator.mod,
+    ast.FloorDiv: operator.floordiv,
+    ast.UAdd: operator.pos,
+    ast.USub: operator.neg,
+}
+
+_CALC_FUNCS = {
+    "abs": abs, "round": round, "min": min, "max": max,
+    "int": int, "float": float,
+    "sqrt": math.sqrt, "pow": math.pow,
+    "log": math.log, "log10": math.log10,
+    "ceil": math.ceil, "floor": math.floor,
+}
+
+_CALC_NAMES = {"pi": math.pi, "e": math.e}
+
+
+def _eval_node(node: ast.AST) -> float:
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, (int, float)):
+            return node.value
+        raise ValueError(f"Unsupported literal: {node.value!r}")
+    if isinstance(node, ast.BinOp):
+        op_fn = _CALC_OPS.get(type(node.op))
+        if not op_fn:
+            raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
+        return op_fn(_eval_node(node.left), _eval_node(node.right))
+    if isinstance(node, ast.UnaryOp):
+        op_fn = _CALC_OPS.get(type(node.op))
+        if not op_fn:
+            raise ValueError(f"Unsupported unary: {type(node.op).__name__}")
+        return op_fn(_eval_node(node.operand))
+    if isinstance(node, ast.Call):
+        if not isinstance(node.func, ast.Name):
+            raise ValueError("Only simple function calls allowed")
+        fn = _CALC_FUNCS.get(node.func.id)
+        if not fn:
+            raise ValueError(f"Function '{node.func.id}' not allowed")
+        return fn(*[_eval_node(a) for a in node.args])
+    if isinstance(node, ast.Name):
+        if node.id in _CALC_NAMES:
+            return _CALC_NAMES[node.id]
+        raise ValueError(f"Name '{node.id}' not allowed")
+    raise ValueError(f"Unsupported node: {type(node).__name__}")
+
+
+def _safe_calculate(expression: str) -> Dict[str, Any]:
+    """Safely evaluate a math expression using AST whitelisting."""
+    if len(expression) > 500:
+        return {"error": "Expression too long", "expression": expression}
+    try:
+        tree = ast.parse(expression.strip(), mode="eval")
+        result = _eval_node(tree.body)
+        if isinstance(result, float) and result.is_integer() and abs(result) < 1e15:
+            formatted = str(int(result))
+        elif isinstance(result, float):
+            formatted = f"{result:.10g}"
+        else:
+            formatted = str(result)
+        return {"expression": expression, "result": result, "formatted": formatted}
+    except ZeroDivisionError:
+        return {"error": "Division by zero", "expression": expression}
+    except Exception as e:
+        return {"error": str(e), "expression": expression}
+
+
 # ---------------------------------------------------------------------------
 # Mixin
 # ---------------------------------------------------------------------------
@@ -216,8 +550,10 @@ class RAGGenerationMixin:
     def build_context(
         rag_results: List[dict],
         web_results: Optional[List[dict]] = None,
+        document_contents: Optional[List[dict]] = None,
+        calculation_results: Optional[List[dict]] = None,
     ) -> str:
-        """Build context string from reranked RAG chunks and web results."""
+        """Build context string from all tool results."""
         parts: List[str] = []
 
         if rag_results:
@@ -228,6 +564,17 @@ class RAGGenerationMixin:
                     f"{r['chunk_text']}\n"
                 )
 
+        if document_contents:
+            parts.append("\n## Full Document Contents:\n")
+            for dc in document_contents:
+                if dc.get("error"):
+                    parts.append(f"\n### {dc.get('document_name', 'Unknown')}\nNote: {dc['error']}\n")
+                else:
+                    parts.append(f"\n### {dc['document_name']}\n")
+                    for chunk in dc.get("chunks", []):
+                        parts.append(chunk["chunk_text"])
+                        parts.append("\n")
+
         if web_results:
             parts.append("\n## Web Search Results:\n")
             for r in web_results:
@@ -236,6 +583,14 @@ class RAGGenerationMixin:
                     f"URL: {r['url']}\n"
                     f"{r['snippet']}\n"
                 )
+
+        if calculation_results:
+            parts.append("\n## Calculation Results:\n")
+            for c in calculation_results:
+                if c.get("error"):
+                    parts.append(f"- {c['expression']} → Error: {c['error']}\n")
+                else:
+                    parts.append(f"- {c['expression']} = {c['formatted']}\n")
 
         return "".join(parts)
 
@@ -258,6 +613,8 @@ class RAGGenerationMixin:
         client = openai_client.client
         all_rag_results: List[dict] = []
         all_web_results: List[dict] = []
+        all_document_contents: List[dict] = []
+        all_calculation_results: List[dict] = []
         total_prompt_tokens = 0
         total_completion_tokens = 0
 
@@ -272,9 +629,12 @@ class RAGGenerationMixin:
             # Session docs are always searchable; org/personal docs need rag_enabled
             if rag_enabled or session_id:
                 available_tools.append(_LIST_DOCUMENTS_TOOL)
+                available_tools.append(_FIND_DOCUMENT_BY_NAME_TOOL)
+                available_tools.append(_GET_DOCUMENT_CONTENT_TOOL)
                 available_tools.append(_SEARCH_DOCUMENTS_TOOL)
             if web_search_enabled and settings.SERPER_API_KEY:
                 available_tools.append(_SEARCH_WEB_TOOL)
+            available_tools.append(_CALCULATE_TOOL)  # always available
 
             if available_tools:
                 tool_response = await client.responses.create(
@@ -371,6 +731,68 @@ class RAGGenerationMixin:
                         yield {"type": "tool_done", "name": "search_web",
                                "count": len(web_results)}
 
+                    # ── find_document_by_name ─────────────────────────────────
+                    elif call.name == "find_document_by_name":
+                        name_query = args.get("query", "")
+                        limit = max(1, min(int(args.get("limit", 10)), 20))
+
+                        yield {"type": "tool_start", "name": "find_document_by_name",
+                               "query": name_query}
+
+                        try:
+                            name_results = await _find_document_by_name(
+                                user_id=user_id,
+                                org_id=org_id,
+                                session_id=session_id,
+                                document_source=document_source,
+                                query=name_query,
+                                limit=limit,
+                            )
+                        except Exception as e:
+                            logger.error("find_document_by_name failed: %s", e)
+                            name_results = {"documents": [], "count": 0, "query": name_query}
+
+                        yield {"type": "tool_done", "name": "find_document_by_name",
+                               "count": name_results["count"], "data": name_results}
+
+                    # ── get_document_content ──────────────────────────────────
+                    elif call.name == "get_document_content":
+                        doc_name = args.get("document_name", "")
+                        max_chunks = max(1, min(int(args.get("max_chunks", 40)), 100))
+
+                        yield {"type": "tool_start", "name": "get_document_content",
+                               "query": doc_name}
+
+                        try:
+                            doc_content = await _get_document_content(
+                                user_id=user_id,
+                                org_id=org_id,
+                                session_id=session_id,
+                                document_source=document_source,
+                                document_name=doc_name,
+                                max_chunks=max_chunks,
+                            )
+                        except Exception as e:
+                            logger.error("get_document_content failed: %s", e)
+                            doc_content = {"error": str(e), "chunks": [], "document_name": doc_name}
+
+                        all_document_contents.append(doc_content)
+                        yield {"type": "tool_done", "name": "get_document_content",
+                               "count": len(doc_content.get("chunks", [])),
+                               "document_name": doc_content.get("document_name", doc_name)}
+
+                    # ── calculate ─────────────────────────────────────────────
+                    elif call.name == "calculate":
+                        expression = args.get("expression", "")
+                        yield {"type": "tool_start", "name": "calculate",
+                               "query": expression}
+
+                        calc_result = _safe_calculate(expression)
+                        all_calculation_results.append(calc_result)
+
+                        yield {"type": "tool_done", "name": "calculate",
+                               "result": calc_result.get("formatted") or calc_result.get("error", "")}
+
             # ── Phase 2: Reranking ────────────────────────────────────────────
             if all_rag_results:
                 all_rag_results = reranker.rerank(
@@ -387,7 +809,12 @@ class RAGGenerationMixin:
                 yield {"type": "web_search", "data": all_web_results}
 
             # ── Phase 3: Streaming Generation ────────────────────────────────
-            context = RAGGenerationMixin.build_context(all_rag_results, all_web_results)
+            context = RAGGenerationMixin.build_context(
+                all_rag_results,
+                all_web_results,
+                all_document_contents or None,
+                all_calculation_results or None,
+            )
 
             instructions_parts = [settings.RAG_SYSTEM_PROMPT]
             if context:

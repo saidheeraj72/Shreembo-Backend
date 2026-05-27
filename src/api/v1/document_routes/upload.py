@@ -10,67 +10,41 @@ from src.api.v1.document_routes.common import check_resource_access, check_gener
 
 router = APIRouter()
 
-@router.post("/upload/init", response_model=UploadInitResponse)
-async def init_upload(
-    data: DocumentUploadInit,
+
+@router.post("/upload/direct", response_model=DocumentResponse)
+async def direct_upload(
+    file: UploadFile = File(...),
+    parent_id: Optional[str] = Form(None),
+    branch_id: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
     user_id: UUID = Depends(get_current_user_id),
     org_context: dict = Depends(get_current_org_context)
 ):
-    """Initialize document upload, returns presigned URL."""
+    """Upload a file directly through the backend to Supabase Storage."""
     org_id = org_context.get("org_id")
-    
+
     # Check permissions
     await check_general_permission(user_id, org_id, "create")
-    
-    if data.parent_id:
-        await check_resource_access(user_id, org_id, data.parent_id, "edit")
 
-    result = await document_service.init_upload(
+    parent_uuid = UUID(parent_id) if parent_id else None
+    branch_uuid = UUID(branch_id) if branch_id else None
+
+    if parent_uuid:
+        await check_resource_access(user_id, org_id, parent_uuid, "edit")
+
+    file_bytes = await file.read()
+    content_type = file.content_type or "application/octet-stream"
+
+    return await document_service.direct_upload(
         org_id=UUID(org_id) if org_id else None,
         owner_id=user_id,
-        filename=data.filename,
-        content_type=data.content_type,
-        size_bytes=data.size_bytes,
-        parent_id=data.parent_id,
-        branch_id=data.branch_id
-    )
-    return result
-
-
-@router.post("/upload/complete", response_model=DocumentResponse)
-async def complete_upload(
-    data: DocumentUploadComplete,
-    filename: str = Query(...),
-    content_type: str = Query(...),
-    size_bytes: int = Query(...),
-    parent_id: Optional[UUID] = Query(None),
-    branch_id: Optional[UUID] = Query(None),
-    description: Optional[str] = Query(None),
-    tags: Optional[List[str]] = Query(None),
-    user_id: UUID = Depends(get_current_user_id),
-    org_context: dict = Depends(get_current_org_context)
-):
-    """Complete document upload after S3 upload is done."""
-    org_id = org_context.get("org_id")
-    
-    if parent_id:
-         await check_resource_access(user_id, org_id, parent_id, "edit")
-
-    # Decode URL-encoded filename (e.g. "My+Document.pdf" -> "My Document.pdf")
-    decoded_filename = unquote_plus(filename)
-
-    return await document_service.complete_upload(
-        org_id=UUID(org_id) if org_id else None,
-        owner_id=user_id,
-        upload_id=data.upload_id,
-        s3_key=data.s3_key,
-        filename=decoded_filename,
+        filename=file.filename,
         content_type=content_type,
-        size_bytes=size_bytes,
-        parent_id=parent_id,
-        branch_id=branch_id,
+        size_bytes=len(file_bytes),
+        file_bytes=file_bytes,
+        parent_id=parent_uuid,
+        branch_id=branch_uuid,
         description=description,
-        tags=tags
     )
 
 
