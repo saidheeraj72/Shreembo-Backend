@@ -22,10 +22,10 @@ qdrant-client
 openai
 
 # Document Processing
-markitdown  # Universal document parser (handles PDF, DOCX, XLSX, PPTX, etc.)
-markitdown[pdf]
-pymupdf  # PDF text extraction (primary for PDFs)
-pymupdf4llm  # PDF to markdown conversion
+unstructured  # Best-in-class document parsing (PDF, DOCX, XLSX, PPTX, HTML, etc.)
+tiktoken  # Token counting for chunk sizing (OpenAI cl100k_base)
+pymupdf  # PDF text extraction (fallback)
+pymupdf4llm  # PDF to markdown conversion (fallback)
 
 # WebSocket
 websockets

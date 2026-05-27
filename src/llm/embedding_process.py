@@ -53,7 +53,16 @@ class EmbeddingProcessMixin:
 
             await ws_manager.send_upload_progress(user_id, upload_id, "generating_embeddings", 60)
             chunks = EmbeddingService.chunk_text(text)
-            embeddings = await openai_client.get_embeddings_batch(chunks)
+
+            # Build embedding input: prepend section header for better retrieval
+            embed_texts = []
+            for chunk in chunks:
+                if chunk.section_header:
+                    embed_texts.append(f"{chunk.section_header}\n\n{chunk.text}")
+                else:
+                    embed_texts.append(chunk.text)
+
+            embeddings = await openai_client.get_embeddings_batch(embed_texts)
             await ws_manager.send_upload_progress(user_id, upload_id, "storing_embeddings", 80)
 
             if is_session_document:
@@ -64,16 +73,19 @@ class EmbeddingProcessMixin:
                 namespace = str(org_id) if org_id else user_id
 
             vectors = []
-            for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+            for chunk, embedding in zip(chunks, embeddings):
                 metadata = {
                     "document_id": str(document_id),
                     "user_id": user_id,
-                    "chunk_index": i,
-                    "chunk_text": chunk,
+                    "chunk_index": chunk.chunk_index,
+                    "chunk_text": chunk.text,
+                    "section_header": chunk.section_header,
+                    "page_numbers": chunk.page_numbers,
+                    "chunk_type": chunk.chunk_type,
                 }
                 if is_session_document and session_id:
                     metadata["session_id"] = session_id
-                vectors.append({"id": f"{document_id}_{i}", "values": embedding, "metadata": metadata})
+                vectors.append({"id": f"{document_id}_{chunk.chunk_index}", "values": embedding, "metadata": metadata})
 
             for i in range(0, len(vectors), 50):
                 await qdrant_client.upsert(vectors[i : i + 50], namespace, index_name)

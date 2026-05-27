@@ -214,6 +214,9 @@ class RAGRetrievalMixin:
                             'document_name': doc_map.get(doc_id, 'Unknown'),
                             'chunk_text': r.metadata.get('chunk_text', ''),
                             'chunk_index': r.metadata.get('chunk_index', 0),
+                            'section_header': r.metadata.get('section_header', ''),
+                            'page_numbers': r.metadata.get('page_numbers', []),
+                            'chunk_type': r.metadata.get('chunk_type', 'text'),
                             'score': r.score
                         })
 
@@ -244,12 +247,15 @@ class RAGRetrievalMixin:
                     boosted_score = r.score * 1.1
 
                     session_filtered_results.append({
-                        'document_id': session_doc_id,  # This is actually session_document_id
+                        'document_id': session_doc_id,
                         'document_name': session_doc_map.get(session_doc_id, 'Unknown'),
                         'chunk_text': r.metadata.get('chunk_text', ''),
                         'chunk_index': r.metadata.get('chunk_index', 0),
+                        'section_header': r.metadata.get('section_header', ''),
+                        'page_numbers': r.metadata.get('page_numbers', []),
+                        'chunk_type': r.metadata.get('chunk_type', 'text'),
                         'score': boosted_score,
-                        'source': 'session'  # Mark as session document
+                        'source': 'session',
                     })
 
         # Combine and sort by score

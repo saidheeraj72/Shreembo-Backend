@@ -559,8 +559,16 @@ class RAGGenerationMixin:
         if rag_results:
             parts.append("## Relevant Document Excerpts:\n")
             for i, r in enumerate(rag_results, 1):
+                header = f"### Source {i}: {r['document_name']}"
+                section = r.get("section_header")
+                pages = r.get("page_numbers")
+                if section:
+                    header += f" — {section}"
+                if pages:
+                    page_str = ", ".join(str(p) for p in pages)
+                    header += f" (p. {page_str})"
                 parts.append(
-                    f"\n### Source {i}: {r['document_name']}\n"
+                    f"\n{header}\n"
                     f"{r['chunk_text']}\n"
                 )
 
@@ -850,6 +858,8 @@ class RAGGenerationMixin:
                     "document_name": r["document_name"],
                     "chunk_index": r["chunk_index"],
                     "chunk_text": r["chunk_text"],
+                    "section_header": r.get("section_header", ""),
+                    "page_numbers": r.get("page_numbers", []),
                     "score": r["score"],
                     "source_type": r.get("source", "organization"),
                 }
