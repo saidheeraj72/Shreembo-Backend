@@ -143,10 +143,10 @@ class SessionDocumentReprocessMixin:
 
         logger.info(f"Reprocessing session document {session_document_id}")
 
-        # Use FastAPI BackgroundTasks if provided
+        # Always use async background processing to stay in main event loop
         if background_tasks:
             background_tasks.add_task(
-                SessionDocumentService._reprocess_document_background_sync,
+                SessionDocumentService._reprocess_document_background,
                 session_document_id=session_document_id,
                 org_id=org_id,
                 s3_key=session_doc["s3_key"],

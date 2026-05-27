@@ -39,7 +39,35 @@ class Chunk:
 
 
 # ---------------------------------------------------------------------------
-# Extraction via `unstructured`
+# Extraction via `markitdown` (non-PDF formats)
+# ---------------------------------------------------------------------------
+
+def _extract_with_markitdown(file_bytes: bytes, file_type: str) -> Optional[str]:
+    """Extract text from non-PDF documents using MarkItDown."""
+    try:
+        from markitdown import MarkItDown
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_type}") as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
+
+        try:
+            md = MarkItDown()
+            result = md.convert(tmp_path)
+            text = result.text_content
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+        return text if text and text.strip() else None
+
+    except Exception as e:
+        logger.warning("MarkItDown extraction failed: %s", e)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Extraction via `unstructured` (PDFs)
 # ---------------------------------------------------------------------------
 
 def _extract_with_unstructured(file_bytes: bytes, file_type: str) -> Optional[str]:
@@ -552,20 +580,28 @@ class EmbeddingCoreMixin:
 
         text = None
 
-        # 1. Try `unstructured` first — best quality for all file types
-        text = _extract_with_unstructured(content, file_type)
-
-        if text and text.strip():
-            logger.info("Extracted with unstructured (%d chars) for %s", len(text), s3_key)
-            return sanitize_text(text)
-
-        # 2. PDF fallback chain: pymupdf4llm → OCR
         if file_type == "pdf":
+            # PDF: unstructured → pymupdf4llm → OCR
+            text = _extract_with_unstructured(content, file_type)
+            if text and text.strip():
+                logger.info("Extracted PDF with unstructured (%d chars) for %s", len(text), s3_key)
+                return sanitize_text(text)
+
             logger.info("unstructured returned empty, trying pymupdf4llm for %s", s3_key)
             text = _extract_pdf_with_pymupdf(content)
             if not text:
                 logger.info("pymupdf4llm empty, trying OCR for %s", s3_key)
                 text = _extract_pdf_with_ocr(content)
+        else:
+            # Non-PDF: MarkItDown
+            text = _extract_with_markitdown(content, file_type)
+            if text and text.strip():
+                logger.info("Extracted with MarkItDown (%d chars) for %s", len(text), s3_key)
+                return sanitize_text(text)
+
+            # Fallback to unstructured if MarkItDown fails
+            logger.info("MarkItDown returned empty, trying unstructured for %s", s3_key)
+            text = _extract_with_unstructured(content, file_type)
 
         return sanitize_text(text) if text else None
 

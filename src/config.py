@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     # File Upload
     MAX_FILE_SIZE_MB: int = 100
     ALLOWED_FILE_TYPES: List[str] = Field(
-        default=["pdf", "docx", "xlsx", "pptx", "jpg", "png", "txt", "csv"]
+        default=["pdf", "docx", "xlsx", "pptx", "jpg", "png", "txt", "csv", "md", "html", "json", "xml"]
     )
 
     @validator("ALLOWED_FILE_TYPES", pre=True)
@@ -156,7 +156,7 @@ Your goal is to provide comprehensive, detailed answers that retain the full ric
     ENABLE_EMBEDDINGS: bool = True
     MAX_EMBEDDING_FILE_SIZE_MB: int = 50
     SUPPORTED_EMBEDDING_TYPES: List[str] = Field(
-        default=["pdf", "docx", "txt", "md"]
+        default=["pdf", "docx", "xlsx", "pptx", "txt", "md", "csv", "html", "json", "xml"]
     )
 
     # Celery
