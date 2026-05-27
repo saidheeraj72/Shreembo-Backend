@@ -33,6 +33,9 @@ class EmbeddingSearchMixin:
                 "score": r.score,
                 "document": doc_map.get(r.metadata["document_id"]),
                 "chunk_text": r.metadata.get("chunk_text", ""),
+                "section_header": r.metadata.get("section_header", ""),
+                "page_numbers": r.metadata.get("page_numbers", []),
+                "chunk_type": r.metadata.get("chunk_type", "text"),
             }
             for r in results
             if r.metadata.get("document_id") in doc_map

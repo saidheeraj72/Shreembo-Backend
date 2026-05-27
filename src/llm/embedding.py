@@ -1,6 +1,6 @@
 """Composed embedding service."""
 
-from .embedding_core import RecursiveHeaderChunker, EmbeddingCoreMixin
+from .embedding_core import SmartDocumentChunker, Chunk, EmbeddingCoreMixin
 from .embedding_process import EmbeddingProcessMixin
 from .embedding_search import EmbeddingSearchMixin
 
