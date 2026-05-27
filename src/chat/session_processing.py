@@ -160,10 +160,12 @@ class SessionDocumentProcessingMixin:
 
         if file_type_lower in supported_types:
             logger.info(f"Scheduling background embedding for document {filename}")
-            # Use FastAPI BackgroundTasks if provided (more reliable than asyncio.create_task)
+            # Always use asyncio.create_task to stay in the main event loop.
+            # This is required because AsyncOpenAI and other async singletons
+            # are bound to the main event loop and fail in a new loop.
             if background_tasks:
                 background_tasks.add_task(
-                    SessionDocumentService._process_document_background_sync,
+                    SessionDocumentService._process_document_background,
                     org_id=org_id,
                     s3_key=s3_key,
                     file_type=file_type_lower,
@@ -174,7 +176,6 @@ class SessionDocumentProcessingMixin:
                     mime_type=mime_type
                 )
             else:
-                # Fallback to asyncio.create_task (less reliable but works for WebSocket calls)
                 asyncio.create_task(
                     SessionDocumentService._process_document_background(
                         org_id=org_id,
@@ -199,7 +200,7 @@ class SessionDocumentProcessingMixin:
                 "file_size": file_size,
                 "s3_key": s3_key,
                 "mime_type": mime_type,
-                "embedding_status": "completed",
+                "embedding_status": "skipped",
                 "processed_at": datetime.utcnow().isoformat()
             }
             db.admin.table("session_documents").insert(session_doc_data).execute()
