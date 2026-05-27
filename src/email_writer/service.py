@@ -92,8 +92,6 @@ class EmailWriterService:
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_message},
             ],
-            max_tokens=settings.OPENAI_CHAT_MAX_TOKENS,
-            temperature=0.7,
         )
 
         generated = response.choices[0].message.content or ""
