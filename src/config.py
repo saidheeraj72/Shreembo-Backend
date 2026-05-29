@@ -144,6 +144,22 @@ When answering questions based on the provided context, you must:
 
 Your goal is to provide comprehensive, detailed answers that retain the full richness of the source documents."""
 
+    # Email Agent — Gmail (Google OAuth)
+    GMAIL_CLIENT_ID: Optional[str] = None
+    GMAIL_CLIENT_SECRET: Optional[str] = None
+    GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/email-agent/oauth/google/callback"
+    GMAIL_SCOPES: List[str] = Field(
+        default=[
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.send",
+            "https://www.googleapis.com/auth/userinfo.email",
+        ]
+    )
+    # Optional dedicated Fernet key for encrypting stored OAuth tokens.
+    # If unset, a key is derived deterministically from SUPABASE_JWT_SECRET.
+    EMAIL_AGENT_ENCRYPTION_KEY: Optional[str] = None
+    EMAIL_AGENT_OAUTH_STATE_TTL: int = 600  # seconds
+
     # Serper Web Search
     SERPER_API_KEY: Optional[str] = None
     SERPER_SEARCH_ENDPOINT: str = "https://google.serper.dev/search"
