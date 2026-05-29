@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(tree:*)",
-      "Bash(grep -r \"router = APIRouter\" /Users/saidheeraj/Desktop/backend/src/api/v1/*.py)"
+      "Bash(grep -r \"router = APIRouter\" /Users/saidheeraj/Desktop/backend/src/api/v1/*.py)",
+      "Bash(python3 -c \"from src.api.v1.document_routes.upload import router; print\\(''upload router loaded OK''\\)\")"
     ]
   }
 }
