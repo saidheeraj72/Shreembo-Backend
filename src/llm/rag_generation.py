@@ -603,6 +603,7 @@ class RAGGenerationMixin:
         org_id: Optional[UUID],
         rag_enabled: bool = True,
         web_search_enabled: bool = False,
+        selected_node_ids: Optional[List[str]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Agentic RAG pipeline. Yields dicts with keys:
@@ -610,6 +611,12 @@ class RAGGenerationMixin:
                 reasoning | chunk | done | error
         """
         client = openai_client.client
+
+        # Expand selected files/folders into a flat set of document IDs to scope
+        # retrieval. Empty means search the whole namespace.
+        selected_document_ids = await RAGService.resolve_selected_document_ids(
+            selected_node_ids
+        ) if selected_node_ids else None
         all_rag_results: List[dict] = []
         all_web_results: List[dict] = []
         all_document_contents: List[dict] = []
@@ -675,6 +682,7 @@ class RAGGenerationMixin:
                                 top_k=fetch_k,
                                 search_main=rag_enabled,
                                 search_session=True,
+                                selected_document_ids=selected_document_ids,
                             )
                         except Exception as e:
                             logger.error("search_documents failed: %s", e)

@@ -68,6 +68,51 @@ class RAGRetrievalMixin:
         return accessible
 
     @staticmethod
+    async def resolve_selected_document_ids(
+        node_ids: List[str],
+    ) -> List[str]:
+        """
+        Expand a mix of selected file and folder node IDs into the full set of
+        file document IDs to restrict RAG search to.
+
+        Files are kept as-is; folders are walked recursively (level by level)
+        to collect every active file beneath them.
+        """
+        node_ids = [str(n) for n in (node_ids or []) if n]
+        if not node_ids:
+            return []
+
+        rows = db.admin.table("storage_nodes").select(
+            "id, node_type"
+        ).in_("id", node_ids).execute()
+
+        file_ids: set = set()
+        seen_folders: set = set()
+        queue: List[str] = []
+        for r in (rows.data or []):
+            if r["node_type"] == "file":
+                file_ids.add(r["id"])
+            else:
+                seen_folders.add(r["id"])
+                queue.append(r["id"])
+
+        # Breadth-first walk through folder hierarchy collecting files
+        while queue:
+            batch = queue[:100]
+            queue = queue[100:]
+            children = db.admin.table("storage_nodes").select(
+                "id, node_type"
+            ).in_("parent_id", batch).eq("status", "active").execute()
+            for c in (children.data or []):
+                if c["node_type"] == "file":
+                    file_ids.add(c["id"])
+                elif c["id"] not in seen_folders:
+                    seen_folders.add(c["id"])
+                    queue.append(c["id"])
+
+        return list(file_ids)
+
+    @staticmethod
     async def search_documents(
         query: str,
         user_id: UUID,
@@ -76,6 +121,7 @@ class RAGRetrievalMixin:
         top_k: int = None,
         search_main: bool = True,
         search_session: bool = True,
+        selected_document_ids: Optional[List[str]] = None,
     ) -> List[dict]:
         """
         Search documents using vector similarity with permission filtering.
@@ -88,8 +134,11 @@ class RAGRetrievalMixin:
             top_k: Number of results to return
             search_main: Whether to search the main (org/personal) index
             search_session: Whether to search the session-specific index
+            selected_document_ids: If provided, restrict the main index search
+                to only these document IDs
         """
         top_k = top_k or settings.RAG_TOP_K
+        normalized_selected_ids = [str(d) for d in (selected_document_ids or []) if d]
 
         # Get query embedding
         query_embedding = await openai_client.get_embedding(query)
@@ -108,10 +157,19 @@ class RAGRetrievalMixin:
 
             logger.debug("RAG: Searching main index in namespace: %s, top_k: %s", namespace, top_k)
 
+            main_filter = None
+            if normalized_selected_ids:
+                main_filter = {"document_id": {"$in": normalized_selected_ids}}
+                logger.debug(
+                    "RAG: Restricting main index to %d selected document IDs",
+                    len(normalized_selected_ids),
+                )
+
             results = await qdrant_client.query(
                 vector=query_embedding,
                 namespace=namespace,
                 top_k=top_k * 2,  # Get extra for filtering
+                filter=main_filter,
             )
             if results:
                 main_results = results

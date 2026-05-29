@@ -20,6 +20,9 @@ CREATE TABLE public.chat_sessions (
     rag_enabled BOOLEAN DEFAULT TRUE,
     web_search_enabled BOOLEAN DEFAULT FALSE,
 
+    -- Persisted document/folder context selection: [{ "id", "name", "type" }]
+    context_nodes JSONB DEFAULT '[]'::jsonb,
+
     -- Sharing
     is_shared BOOLEAN DEFAULT FALSE,
     shared_at TIMESTAMPTZ,

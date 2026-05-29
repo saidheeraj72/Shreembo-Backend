@@ -113,6 +113,7 @@ class ChatConnectionManager:
                 content=data.get("content", ""),
                 rag_enabled=data.get("rag_enabled"),
                 web_search_enabled=data.get("web_search_enabled"),
+                selected_node_ids=data.get("selected_node_ids"),
             )
 
         elif msg_type == "stop_generation":
@@ -134,6 +135,7 @@ class ChatConnectionManager:
         content: str,
         rag_enabled: Optional[bool],
         web_search_enabled: Optional[bool],
+        selected_node_ids: Optional[list] = None,
     ):
         """Process a chat message with streaming response."""
         # Import here to avoid circular dependency
@@ -166,6 +168,14 @@ class ChatConnectionManager:
                 rag_enabled = session["rag_enabled"]
             if web_search_enabled is None:
                 web_search_enabled = session["web_search_enabled"]
+
+            # Fall back to the session's persisted document/folder context
+            # when the client did not send a per-message selection.
+            if selected_node_ids is None:
+                selected_node_ids = [
+                    n["id"] for n in (session.get("context_nodes") or [])
+                    if isinstance(n, dict) and n.get("id")
+                ]
 
             # Check usage limits
             limit_checks = await limit_service.check_all_limits(
@@ -240,6 +250,7 @@ class ChatConnectionManager:
                 org_id=org_id,
                 rag_enabled=rag_enabled,
                 web_search_enabled=web_search_enabled,
+                selected_node_ids=selected_node_ids,
             ):
                 # Check if generation was stopped
                 if not self.active_generations.get(generation_key, False):
