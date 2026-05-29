@@ -150,7 +150,9 @@ Your goal is to provide comprehensive, detailed answers that retain the full ric
     GOOGLE_REDIRECT_URI: str = "http://localhost:8000/api/v1/email-agent/oauth/google/callback"
     GMAIL_SCOPES: List[str] = Field(
         default=[
-            "https://www.googleapis.com/auth/gmail.readonly",
+            # modify = read + label/draft changes (mark read, archive, star,
+            # trash, labels, drafts) without permanent delete. Supersedes readonly.
+            "https://www.googleapis.com/auth/gmail.modify",
             "https://www.googleapis.com/auth/gmail.send",
             "https://www.googleapis.com/auth/userinfo.email",
         ]

@@ -46,6 +46,7 @@ class EmailDetail(EmailListItem):
 class EmailListResponse(BaseModel):
     account_id: UUID
     items: List[EmailListItem]
+    next_page_token: Optional[str] = None
 
 
 class SendEmailRequest(BaseModel):

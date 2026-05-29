@@ -64,17 +64,19 @@ async def disconnect_account(
 async def list_messages(
     account_id: UUID,
     query: str | None = Query(None, description="Gmail search query, e.g. 'from:boss is:unread'"),
-    max_results: int = Query(20, ge=1, le=100),
+    max_results: int = Query(25, ge=1, le=100),
+    page_token: str | None = Query(None, description="Token from a previous response's next_page_token"),
     user_id: UUID = Depends(get_current_user_id),
 ) -> EmailListResponse:
     account = await account_store.get_account(user_id, account_id)
     access_token = await account_store.get_valid_access_token(account)
-    messages = await gmail_client.list_messages(
-        access_token, query=query, max_results=max_results
+    result = await gmail_client.list_messages(
+        access_token, query=query, max_results=max_results, page_token=page_token
     )
     return EmailListResponse(
         account_id=account_id,
-        items=[EmailListItem(**m) for m in messages],
+        items=[EmailListItem(**m) for m in result["messages"]],
+        next_page_token=result["next_page_token"],
     )
 
 
