@@ -80,3 +80,39 @@ class EmailAgentChatRequest(BaseModel):
 class EmailAgentChatResponse(BaseModel):
     reply: str
     actions: List[str] = Field(default_factory=list)
+
+
+class MindMapRequest(BaseModel):
+    """Trigger a scan over the mailbox to build a mind map."""
+    query: Optional[str] = Field(
+        default=None,
+        description="Optional Gmail query; defaults to recent inbox.",
+    )
+    max_emails: int = Field(default=200, ge=1, le=200)
+    map_type: str = Field(
+        default="problems",
+        description="Which mind map to build: problems, actions, topics, people.",
+    )
+
+
+class MindMapNode(BaseModel):
+    id: str
+    label: str
+    type: str
+    summary: str = ""
+    source_email_ids: List[str] = Field(default_factory=list)
+
+
+class MindMapEdge(BaseModel):
+    id: str
+    source: str
+    target: str
+    relation: str
+
+
+class MindMapResponse(BaseModel):
+    account_id: UUID
+    nodes: List[MindMapNode] = Field(default_factory=list)
+    edges: List[MindMapEdge] = Field(default_factory=list)
+    email_count: int = 0
+    generated_at: str

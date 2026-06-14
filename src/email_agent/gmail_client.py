@@ -234,11 +234,18 @@ async def get_message(access_token: str, message_id: str) -> dict:
             headers=_auth_headers(access_token),
             params={"format": "full"},
         )
-    if resp.status_code == 404:
-        raise AppException("Email not found.", status_code=404)
+    if resp.status_code in (400, 404):
+        # 400 = malformed/invalid id (often a thread id or RFC822 Message-Id was
+        # passed instead of the Gmail message id); 404 = no such message.
+        raise AppException(
+            f"Email '{message_id}' not found or its id is invalid.", status_code=404
+        )
     if resp.status_code != 200:
-        logger.error("Gmail get failed: %s", resp.text)
-        raise AppException("Failed to fetch Gmail message.", status_code=502)
+        logger.error("Gmail get failed (%s): %s", resp.status_code, resp.text)
+        raise AppException(
+            f"Failed to fetch Gmail message ({resp.status_code}): {resp.text[:300]}",
+            status_code=502,
+        )
     return parse_message(resp.json())
 
 

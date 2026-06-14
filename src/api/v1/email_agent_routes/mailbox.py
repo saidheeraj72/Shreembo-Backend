@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Query
 from src.core.dependencies import get_current_user_id
 from src.email_agent import accounts as account_store
 from src.email_agent import gmail_client
+from src.email_agent import mind_map as mind_map_builder
 from src.email_agent.agent import email_agent
 from src.models.email_agent import (
     EmailAccountResponse,
@@ -23,6 +24,8 @@ from src.models.email_agent import (
     EmailDetail,
     EmailListItem,
     EmailListResponse,
+    MindMapRequest,
+    MindMapResponse,
     SendEmailRequest,
     SendEmailResponse,
 )
@@ -138,3 +141,29 @@ async def chat(
         [m.model_dump() for m in request.messages],
     )
     return EmailAgentChatResponse(reply=result["reply"], actions=result["actions"])
+
+
+@router.post(
+    "/accounts/{account_id}/mind-map",
+    response_model=MindMapResponse,
+    summary="Build a problem/issue mind map from the mailbox",
+)
+async def build_mind_map(
+    account_id: UUID,
+    request: MindMapRequest,
+    user_id: UUID = Depends(get_current_user_id),
+) -> MindMapResponse:
+    account = await account_store.get_account(user_id, account_id)
+    graph = await mind_map_builder.build_mind_map(
+        account,
+        query=request.query,
+        max_emails=request.max_emails,
+        map_type=request.map_type,
+    )
+    return MindMapResponse(
+        account_id=account_id,
+        nodes=graph["nodes"],
+        edges=graph["edges"],
+        email_count=graph["email_count"],
+        generated_at=graph["generated_at"],
+    )
