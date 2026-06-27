@@ -116,3 +116,32 @@ class MindMapResponse(BaseModel):
     edges: List[MindMapEdge] = Field(default_factory=list)
     email_count: int = 0
     generated_at: str
+
+
+class IssueTableRequest(BaseModel):
+    """Trigger a scan over the mailbox to build a table of recurring issues."""
+    query: Optional[str] = Field(
+        default=None,
+        description="Optional Gmail query; defaults to recent inbox.",
+    )
+    max_emails: int = Field(default=200, ge=1, le=200)
+
+
+class IssueItem(BaseModel):
+    key: str
+    title: str
+    summary: str = ""
+    severity: str = "medium"
+    occurrences: int = 0
+    solved: bool = False
+    solution: str = ""
+    first_raised: Optional[str] = None
+    last_raised: Optional[str] = None
+    source_email_ids: List[str] = Field(default_factory=list)
+
+
+class IssueTableResponse(BaseModel):
+    account_id: UUID
+    issues: List[IssueItem] = Field(default_factory=list)
+    email_count: int = 0
+    generated_at: str

@@ -81,7 +81,8 @@ async def google_oauth_callback(
     error: str = Query(None),
 ):
     """Handle Google's redirect: validate state, exchange code, store the account."""
-    fallback_base = f"{settings.FRONTEND_URL.rstrip('/')}/email-agent"
+    # Email configuration lives in the admin panel, so return the user there.
+    fallback_base = f"{settings.FRONTEND_URL.rstrip('/')}/admin"
 
     if error:
         logger.warning("Google OAuth returned error: %s", error)
@@ -95,8 +96,8 @@ async def google_oauth_callback(
         return RedirectResponse(f"{fallback_base}?connected=google&status=expired")
     await cache.delete(f"{_STATE_PREFIX}{state}")
 
-    # Return the user to the same frontend they started from.
-    redirect_base = f"{cached.get('origin', settings.FRONTEND_URL).rstrip('/')}/email-agent"
+    # Return the user to the same frontend they started from (admin panel).
+    redirect_base = f"{cached.get('origin', settings.FRONTEND_URL).rstrip('/')}/admin"
     user_id = UUID(cached["user_id"])
     try:
         tokens = await google_oauth.exchange_code(code)
