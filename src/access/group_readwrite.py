@@ -28,20 +28,24 @@ class GroupReadWriteMixin:
             .execute()
         )
 
-        groups = []
-        for group in response.data:
-            member_count = (
+        group_ids = [group["id"] for group in response.data]
+
+        # Batch fetch all group member counts in one query
+        member_count_by_group: dict[str, int] = {}
+        if group_ids:
+            all_members_response = (
                 db.admin.table("group_members")
-                .select("user_id", count="exact")
-                .eq("group_id", group["id"])
+                .select("group_id")
+                .in_("group_id", group_ids)
                 .execute()
             )
-            groups.append({
-                **group,
-                "member_count": member_count.count or 0,
-            })
+            for m in (all_members_response.data or []):
+                member_count_by_group[m["group_id"]] = member_count_by_group.get(m["group_id"], 0) + 1
 
-        return groups
+        return [
+            {**group, "member_count": member_count_by_group.get(group["id"], 0)}
+            for group in response.data
+        ]
 
     @staticmethod
     async def get_group(org_id: UUID, group_id: UUID) -> dict:

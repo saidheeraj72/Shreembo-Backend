@@ -39,7 +39,8 @@ async def create_session(
         org_id=UUID(org_id) if org_id else None,
         title=data.title,
         rag_enabled=data.rag_enabled,
-        web_search_enabled=data.web_search_enabled
+        web_search_enabled=data.web_search_enabled,
+        context_nodes=[n.model_dump() for n in data.context_nodes] if data.context_nodes else None
     )
     return session
 

@@ -202,7 +202,6 @@ async def _list_accessible_documents(
     user_id: UUID,
     org_id: Optional[UUID],
     session_id: Optional[UUID],
-    document_source: str,
     limit: int,
     offset: int,
 ) -> Dict[str, Any]:
@@ -216,9 +215,7 @@ async def _list_accessible_documents(
 
     # ── Org / personal documents ──────────────────────────────────────────
     try:
-        namespace_is_org = org_id and document_source != "personal"
-
-        if namespace_is_org:
+        if org_id:
             is_admin = await permission_service.is_admin_or_owner(user_id, org_id)
             query = (
                 db.admin.table("storage_nodes")
@@ -255,7 +252,7 @@ async def _list_accessible_documents(
                     "description": d.get("description") or "",
                     "tags": d.get("tags") or [],
                     "embedding_status": d.get("embedding_status") or "unknown",
-                    "source": "organization" if namespace_is_org else "personal",
+                    "source": "organization" if org_id else "personal",
                 })
     except Exception as e:
         logger.error("list_documents: storage_nodes query failed: %s", e)
@@ -292,13 +289,11 @@ async def _find_document_by_name(
     user_id: UUID,
     org_id: Optional[UUID],
     session_id: Optional[UUID],
-    document_source: str,
     query: str,
     limit: int = 10,
 ) -> Dict[str, Any]:
     """Search storage_nodes by filename, description, or tags (metadata only)."""
     limit = max(1, min(limit, 20))
-    namespace_is_org = org_id and document_source != "personal"
     docs: List[dict] = []
     seen_ids: set = set()
 
@@ -310,7 +305,7 @@ async def _find_document_by_name(
             .eq("node_type", "file")
             .ilike(ilike_col, f"%{query}%")
         )
-        if namespace_is_org:
+        if org_id:
             return q.eq("org_id", str(org_id))
         return q.eq("owner_id", str(user_id)).is_("org_id", "null")
 
@@ -329,7 +324,7 @@ async def _find_document_by_name(
                         "description": d.get("description") or "",
                         "tags": d.get("tags") or [],
                         "embedding_status": d.get("embedding_status") or "unknown",
-                        "source": "organization" if namespace_is_org else "personal",
+                        "source": "organization" if org_id else "personal",
                     })
     except Exception as e:
         logger.error("find_document_by_name: DB query failed: %s", e)
@@ -368,7 +363,6 @@ async def _get_document_content(
     user_id: UUID,
     org_id: Optional[UUID],
     session_id: Optional[UUID],
-    document_source: str,
     document_name: str,
     max_chunks: int = 40,
 ) -> Dict[str, Any]:
@@ -376,7 +370,6 @@ async def _get_document_content(
     from src.core.qdrant_client import qdrant_client
 
     max_chunks = max(1, min(max_chunks, 100))
-    namespace_is_org = org_id and document_source != "personal"
 
     # Locate document in storage_nodes by partial name match
     try:
@@ -387,7 +380,7 @@ async def _get_document_content(
             .eq("status", "active")
             .eq("node_type", "file")
         )
-        if namespace_is_org:
+        if org_id:
             q = q.eq("org_id", str(org_id))
         else:
             q = q.eq("owner_id", str(user_id)).is_("org_id", "null")
@@ -440,7 +433,7 @@ async def _get_document_content(
     real_name = doc["name"]
 
     # Permission check for org documents
-    if namespace_is_org:
+    if org_id:
         accessible = await RAGService.get_accessible_documents_for_rag(user_id, org_id, [doc_id])
         if not accessible:
             return {
@@ -449,7 +442,7 @@ async def _get_document_content(
                 "document_name": real_name,
             }
 
-    namespace = str(org_id) if namespace_is_org else str(user_id)
+    namespace = str(org_id) if org_id else str(user_id)
     chunks = await qdrant_client.scroll_by_document(
         document_id=doc_id,
         namespace=namespace,
@@ -610,8 +603,7 @@ class RAGGenerationMixin:
         org_id: Optional[UUID],
         rag_enabled: bool = True,
         web_search_enabled: bool = False,
-        document_source: str = "organization",
-        selected_document_ids: Optional[List[str]] = None,
+        selected_node_ids: Optional[List[str]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Agentic RAG pipeline. Yields dicts with keys:
@@ -619,6 +611,12 @@ class RAGGenerationMixin:
                 reasoning | chunk | done | error
         """
         client = openai_client.client
+
+        # Expand selected files/folders into a flat set of document IDs to scope
+        # retrieval. Empty means search the whole namespace.
+        selected_document_ids = await RAGService.resolve_selected_document_ids(
+            selected_node_ids
+        ) if selected_node_ids else None
         all_rag_results: List[dict] = []
         all_web_results: List[dict] = []
         all_document_contents: List[dict] = []
@@ -682,7 +680,6 @@ class RAGGenerationMixin:
                                 org_id=org_id,
                                 session_id=session_id,
                                 top_k=fetch_k,
-                                document_source=document_source,
                                 search_main=rag_enabled,
                                 search_session=True,
                                 selected_document_ids=selected_document_ids,
@@ -713,7 +710,6 @@ class RAGGenerationMixin:
                                 user_id=user_id,
                                 org_id=org_id,
                                 session_id=session_id,
-                                document_source=document_source,
                                 limit=limit,
                                 offset=offset,
                             )
@@ -752,7 +748,6 @@ class RAGGenerationMixin:
                                 user_id=user_id,
                                 org_id=org_id,
                                 session_id=session_id,
-                                document_source=document_source,
                                 query=name_query,
                                 limit=limit,
                             )
@@ -776,7 +771,6 @@ class RAGGenerationMixin:
                                 user_id=user_id,
                                 org_id=org_id,
                                 session_id=session_id,
-                                document_source=document_source,
                                 document_name=doc_name,
                                 max_chunks=max_chunks,
                             )

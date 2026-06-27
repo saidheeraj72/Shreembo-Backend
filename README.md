@@ -245,7 +245,10 @@ migrations/add_user_access_controls.sql
 migrations/add_meetings_tables.sql
 migrations/fix_node_permissions_constraint.sql
 migrations/update_session_documents_schema.sql
-migrations/add_thinking_to_messages.sql       ← run last
+migrations/add_thinking_to_messages.sql
+migrations/add_chat_context_nodes.sql
+migrations/add_email_accounts.sql
+migrations/add_email_issue_scans.sql          ← run last
 ```
 
 ### Using the Supabase CLI

@@ -6,3 +6,5 @@ __pycache__/
 
 enterprise-intelligence-hub
 enterprise-intelligence-hub/
+
+qdrant_data/

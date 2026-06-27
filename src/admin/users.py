@@ -1,18 +1,11 @@
 """Auto-split admin service part."""
-from datetime import datetime, timedelta
 from typing import List, Optional
 from uuid import UUID
-import secrets
-import logging
 
 from src.core.database import db
-from src.core.cache import cache
-from src.core.exceptions import NotFoundError, ConflictError, AuthorizationError
+from src.core.exceptions import NotFoundError
 from src.audit.service import audit_service
-from src.email.service import email_service
 from src.models.audit import AuditAction
-
-logger = logging.getLogger(__name__)
 
 
 class AdminUsersMixin:
@@ -31,8 +24,6 @@ class AdminUsersMixin:
         Returns:
             List of members with user profiles and roles
         """
-        logger.info(f"[USERS] Fetching users for org_id: {org_id}, status filter: {status}")
-
         query = (
             db.admin.table("organization_members")
             .select("*, profiles!organization_members_user_id_fkey(id, email, full_name, display_name, avatar_url, status, last_active_at), roles(id, name, slug, color, icon)")
@@ -44,53 +35,55 @@ class AdminUsersMixin:
             query = query.eq("status", status)
 
         response = query.execute()
-        logger.info(f"[USERS] Found {len(response.data)} members")
 
-        # Get branch assignments for each user
-        users = []
-        for member in response.data:
-            logger.info(f"[USERS] Processing user: {member.get('user_id')}, role: {member.get('roles', {}).get('name', 'N/A')}")
+        user_ids = [member["user_id"] for member in response.data]
+        role_ids = list(set(member["role_id"] for member in response.data if member.get("role_id")))
 
-            branches_response = (
+        # Batch fetch all branch assignments in one query
+        branches_by_user: dict[str, list] = {}
+        if user_ids:
+            all_branches_response = (
                 db.admin.table("user_branches")
                 .select("*, branches(id, name, code)")
-                .eq("user_id", member["user_id"])
+                .in_("user_id", user_ids)
                 .execute()
             )
+            for b in (all_branches_response.data or []):
+                branches_by_user.setdefault(b["user_id"], []).append(b)
 
-            # Enrich role data with permission_ids
+        # Batch fetch all role permissions in one query
+        perms_by_role: dict[str, list] = {}
+        if role_ids:
+            all_role_perms_response = (
+                db.admin.table("role_permissions")
+                .select("role_id, permission_id")
+                .in_("role_id", role_ids)
+                .execute()
+            )
+            for p in (all_role_perms_response.data or []):
+                perms_by_role.setdefault(p["role_id"], []).append(p["permission_id"])
+
+        users = []
+        for member in response.data:
             role_data = member.get("roles")
             if role_data and member.get("role_id"):
-                # Get permission IDs for this role
-                role_perms = (
-                    db.admin.table("role_permissions")
-                    .select("permission_id")
-                    .eq("role_id", member["role_id"])
-                    .execute()
-                )
-                permission_ids = [p["permission_id"] for p in (role_perms.data or [])]
+                permission_ids = perms_by_role.get(member["role_id"], [])
                 role_data = {
                     **role_data,
                     "permission_ids": permission_ids,
                     "permission_count": len(permission_ids),
                 }
-                logger.info(f"[USERS] User {member.get('user_id')}: enriched role with {len(permission_ids)} permissions")
 
-            user_data = {
+            user_branches = branches_by_user.get(member["user_id"], [])
+            users.append({
                 **member,
                 "user": member.get("profiles"),
                 "role": role_data,
                 "branches": [
                     {**b["branches"], "is_primary": b["is_primary"]}
-                    for b in branches_response.data
+                    for b in user_branches
                 ],
-            }
-
-            logger.info(f"[USERS] User {member.get('user_id')}: role_id={member.get('role_id')}, role_name={user_data.get('role', {}).get('name', 'N/A')}")
-
-            users.append(user_data)
-
-        logger.info(f"[USERS] Returning {len(users)} users")
+            })
         return users
 
     @staticmethod
@@ -108,9 +101,6 @@ class AdminUsersMixin:
         Raises:
             NotFoundError: If user not found in org
         """
-        logger.info(f"[USER_DETAIL] Fetching user {user_id} for org {org_id}")
-
-        # Get member record with profile and role
         member_response = (
             db.admin.table("organization_members")
             .select("*, profiles!organization_members_user_id_fkey(*), roles(*)")
@@ -123,17 +113,9 @@ class AdminUsersMixin:
         if not member_response.data:
             raise NotFoundError("User not found in organization")
 
-        logger.info(f"[USER_DETAIL] Found user with role: {member_response.data.get('roles', {}).get('name', 'N/A')}")
-
-        # Get user's permissions
         from src.access.permission import permission_service
         permissions = await permission_service.get_user_permissions(user_id, org_id)
 
-        logger.info(f"[USER_DETAIL] User permissions: {len(permissions)} modules")
-        for module, actions in list(permissions.items())[:3]:
-            logger.info(f"[USER_DETAIL]   {module}: {list(actions.keys())}")
-
-        # Get branch assignments
         branches_response = (
             db.admin.table("user_branches")
             .select("*, branches(id, name, code, branch_type)")
@@ -141,7 +123,7 @@ class AdminUsersMixin:
             .execute()
         )
 
-        result = {
+        return {
             **member_response.data,
             "user": member_response.data.get("profiles"),
             "role": member_response.data.get("roles"),
@@ -151,9 +133,6 @@ class AdminUsersMixin:
                 for b in branches_response.data
             ],
         }
-
-        logger.info(f"[USER_DETAIL] Returning user with {len(result['permissions'])} permission modules, role: {result.get('role', {}).get('name', 'N/A')}")
-        return result
 
     @staticmethod
     async def update_member(

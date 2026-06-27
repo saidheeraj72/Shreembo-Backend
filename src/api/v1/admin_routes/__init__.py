@@ -1,7 +1,6 @@
 from . import (
     audit,
     branches_crud,
-    branch_users,
     users_management,
     user_permissions,
     invitations,
@@ -9,13 +8,12 @@ from . import (
     groups_crud,
     group_members,
     folder_access,
-    usage,
+    init,
 )
 
 __all__ = [
     "audit",
     "branches_crud",
-    "branch_users",
     "users_management",
     "user_permissions",
     "invitations",
@@ -23,5 +21,5 @@ __all__ = [
     "groups_crud",
     "group_members",
     "folder_access",
-    "usage",
+    "init",
 ]

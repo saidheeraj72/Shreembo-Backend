@@ -36,23 +36,24 @@ class AdminBranchesReadMixin:
 
         response = query.execute()
 
-        # Get user counts for each branch
-        branches = []
-        for branch in response.data:
-            user_count_response = (
+        branch_ids = [branch["id"] for branch in response.data]
+
+        # Batch fetch all user-branch assignments in one query
+        user_count_by_branch: dict[str, int] = {}
+        if branch_ids:
+            all_user_branches_response = (
                 db.admin.table("user_branches")
-                .select("user_id", count="exact")
-                .eq("branch_id", branch["id"])
+                .select("branch_id")
+                .in_("branch_id", branch_ids)
                 .execute()
             )
+            for ub in (all_user_branches_response.data or []):
+                user_count_by_branch[ub["branch_id"]] = user_count_by_branch.get(ub["branch_id"], 0) + 1
 
-            branches.append({
-                **branch,
-                "manager": branch.get("profiles"),
-                "user_count": user_count_response.count or 0,
-            })
-
-        return branches
+        return [
+            {**branch, "manager": branch.get("profiles"), "user_count": user_count_by_branch.get(branch["id"], 0)}
+            for branch in response.data
+        ]
 
     @staticmethod
     async def get_branch(org_id: UUID, branch_id: UUID) -> dict:

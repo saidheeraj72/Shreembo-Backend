@@ -30,11 +30,19 @@ class EmbeddingStatus(str, Enum):
 
 # ============== Request Models ==============
 
+class ContextNode(BaseModel):
+    """A selected document or folder used to scope RAG retrieval."""
+    id: str
+    name: str
+    type: str  # "file" | "folder"
+
+
 class ChatSessionCreate(BaseModel):
     """Create a new chat session."""
     title: Optional[str] = "New Chat"
     rag_enabled: bool = True
     web_search_enabled: bool = False
+    context_nodes: Optional[List[ContextNode]] = None
 
 
 class ChatSessionUpdate(BaseModel):
@@ -43,6 +51,7 @@ class ChatSessionUpdate(BaseModel):
     rag_enabled: Optional[bool] = None
     web_search_enabled: Optional[bool] = None
     is_shared: Optional[bool] = None
+    context_nodes: Optional[List[ContextNode]] = None
 
 
 class ChatMessageRequest(BaseModel):
@@ -121,6 +130,7 @@ class ChatSessionResponse(BaseModel):
     title: str
     rag_enabled: bool
     web_search_enabled: bool
+    context_nodes: List[ContextNode] = []
     is_shared: bool
     status: SessionStatus
     message_count: int

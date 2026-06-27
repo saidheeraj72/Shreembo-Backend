@@ -15,7 +15,8 @@ class ChatSessionsMixin:
         org_id: Optional[UUID],
         title: str = "New Chat",
         rag_enabled: bool = True,
-        web_search_enabled: bool = False
+        web_search_enabled: bool = False,
+        context_nodes: Optional[List[dict]] = None
     ) -> dict:
         """Create a new chat session."""
         data = {
@@ -24,6 +25,7 @@ class ChatSessionsMixin:
             "title": title,
             "rag_enabled": rag_enabled,
             "web_search_enabled": web_search_enabled,
+            "context_nodes": context_nodes or [],
             "status": "active",
             "message_count": 0
         }

@@ -22,8 +22,6 @@ class RAGNonStreamingMixin:
         org_id: Optional[UUID],
         rag_enabled: bool = True,
         web_search_enabled: bool = False,
-        document_source: str = "organization",
-        selected_document_ids: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Generate non-streaming response (for REST API fallback).
@@ -42,8 +40,6 @@ class RAGNonStreamingMixin:
             org_id=org_id,
             rag_enabled=rag_enabled,
             web_search_enabled=web_search_enabled,
-            document_source=document_source,
-            selected_document_ids=selected_document_ids
         ):
             if chunk["type"] == "rag_context":
                 rag_results = chunk["data"]

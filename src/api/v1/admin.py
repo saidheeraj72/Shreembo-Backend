@@ -4,7 +4,6 @@ from fastapi import APIRouter
 from src.api.v1.admin_routes import (
     audit,
     branches_crud,
-    branch_users,
     users_management,
     user_permissions,
     invitations,
@@ -12,13 +11,13 @@ from src.api.v1.admin_routes import (
     groups_crud,
     group_members,
     folder_access,
-    usage,
+    init,
 )
 
 router = APIRouter()
+router.include_router(init.router)
 router.include_router(audit.router)
 router.include_router(branches_crud.router)
-router.include_router(branch_users.router)
 router.include_router(users_management.router)
 router.include_router(user_permissions.router)
 router.include_router(invitations.router)
@@ -26,4 +25,3 @@ router.include_router(roles.router)
 router.include_router(groups_crud.router)
 router.include_router(group_members.router)
 router.include_router(folder_access.router)
-router.include_router(usage.router)
