@@ -4,18 +4,19 @@ Email Agent — Google OAuth connect flow.
   GET /oauth/google/start     (authenticated)  -> returns Google consent URL
   GET /oauth/google/callback  (public)         -> exchanges code, stores account
 
-The user is identified across the redirect via a one-time `state` token stored
-in Redis (state -> user_id), since the callback carries no Authorization header.
+The user is identified across the redirect via a signed JWT state token
+(stateless, avoiding any Redis/cache dependencies), since the callback
+carries no Authorization header.
 """
 import logging
-import secrets
+import time
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import RedirectResponse
+from jose import jwt, JWTError
 
 from src.config import settings
-from src.core.cache import cache
 from src.core.dependencies import get_current_user_id
 from src.core.exceptions import AppException
 from src.email_agent import accounts, google_oauth
@@ -24,8 +25,6 @@ from src.models.email_agent import ConnectStartResponse
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-_STATE_PREFIX = "email_agent:oauth_state:"
 
 
 def _resolve_frontend_origin(request: Request) -> str:
@@ -60,18 +59,13 @@ async def google_oauth_start(
     user_id: UUID = Depends(get_current_user_id),
 ) -> ConnectStartResponse:
     """Generate a Google consent URL for the authenticated user to connect Gmail."""
-    state = secrets.token_urlsafe(32)
-    success = await cache.set(
-        f"{_STATE_PREFIX}{state}",
-        {"user_id": str(user_id), "origin": _resolve_frontend_origin(request)},
-        ttl=settings.EMAIL_AGENT_OAUTH_STATE_TTL,
-    )
-    if not success:
-        logger.error("Failed to save OAuth state in Redis cache.")
-        raise AppException(
-            "Failed to initialize secure state in cache. Please verify Redis is running and reachable.",
-            status_code=500,
-        )
+    payload = {
+        "user_id": str(user_id),
+        "origin": _resolve_frontend_origin(request),
+        "exp": int(time.time()) + settings.EMAIL_AGENT_OAUTH_STATE_TTL,
+        "purpose": "email_agent_oauth",
+    }
+    state = jwt.encode(payload, settings.SUPABASE_JWT_SECRET, algorithm="HS256")
     url = google_oauth.build_authorization_url(state)
     return ConnectStartResponse(authorization_url=url)
 
@@ -97,14 +91,22 @@ async def google_oauth_callback(
     if not code or not state:
         return RedirectResponse(f"{fallback_base}?connected=google&status=invalid")
 
-    cached = await cache.get(f"{_STATE_PREFIX}{state}")
-    if not cached:
+    # Decode and verify the stateless state token (signed JWT)
+    try:
+        payload = jwt.decode(
+            state,
+            settings.SUPABASE_JWT_SECRET,
+            algorithms=["HS256"],
+        )
+        if payload.get("purpose") != "email_agent_oauth":
+            raise JWTError("Invalid token purpose")
+    except JWTError as e:
+        logger.warning("Google OAuth state verification failed: %s", e)
         return RedirectResponse(f"{fallback_base}?connected=google&status=expired")
-    await cache.delete(f"{_STATE_PREFIX}{state}")
 
     # Return the user to the same frontend they started from (admin panel).
-    redirect_base = f"{cached.get('origin', settings.FRONTEND_URL).rstrip('/')}/admin"
-    user_id = UUID(cached["user_id"])
+    redirect_base = f"{payload.get('origin', settings.FRONTEND_URL).rstrip('/')}/admin"
+    user_id = UUID(payload["user_id"])
     try:
         tokens = await google_oauth.exchange_code(code)
         await accounts.save_google_account(user_id, tokens)
