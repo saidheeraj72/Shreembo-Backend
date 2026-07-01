@@ -61,11 +61,17 @@ async def google_oauth_start(
 ) -> ConnectStartResponse:
     """Generate a Google consent URL for the authenticated user to connect Gmail."""
     state = secrets.token_urlsafe(32)
-    await cache.set(
+    success = await cache.set(
         f"{_STATE_PREFIX}{state}",
         {"user_id": str(user_id), "origin": _resolve_frontend_origin(request)},
         ttl=settings.EMAIL_AGENT_OAUTH_STATE_TTL,
     )
+    if not success:
+        logger.error("Failed to save OAuth state in Redis cache.")
+        raise AppException(
+            "Failed to initialize secure state in cache. Please verify Redis is running and reachable.",
+            status_code=500,
+        )
     url = google_oauth.build_authorization_url(state)
     return ConnectStartResponse(authorization_url=url)
 
