@@ -189,7 +189,7 @@ async def root():
 
 
 # Import and include routers
-from src.api.v1 import auth, super_admin, org_requests, admin, documents, share_links, chat, limits, email, meetings, email_agent
+from src.api.v1 import auth, super_admin, org_requests, admin, documents, share_links, chat, limits, email, meetings, email_agent, bounce_board
 
 app.include_router(auth.router, prefix=f"{settings.api_prefix}/auth", tags=["Authentication"])
 app.include_router(org_requests.router, prefix=f"{settings.api_prefix}/organization", tags=["Organization Requests"])
@@ -202,3 +202,4 @@ app.include_router(limits.router, prefix=f"{settings.api_prefix}", tags=["Usage 
 app.include_router(email.router, prefix=f"{settings.api_prefix}/email", tags=["Email Writer"])
 app.include_router(meetings.router, prefix=f"{settings.api_prefix}/meetings", tags=["Meetings"])
 app.include_router(email_agent.router, prefix=f"{settings.api_prefix}/email-agent", tags=["Email Agent"])
+app.include_router(bounce_board.router, prefix=f"{settings.api_prefix}/bounce-board", tags=["Bounce Board"])
