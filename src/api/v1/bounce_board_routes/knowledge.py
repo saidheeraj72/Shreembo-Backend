@@ -11,17 +11,19 @@ import logging
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 
 from src.bounce_board import ingest as ingest_jobs
 from src.bounce_board import kb
+from src.bounce_board.constants import INDUSTRIES, SOURCE_TYPE_LABELS
 from src.core.dependencies import get_current_user_id
 from src.models.bounce_board import (
     IngestJob,
-    IngestRequest,
     KBIssue,
     KBMindMap,
 )
+
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB
 
 logger = logging.getLogger(__name__)
 
@@ -54,17 +56,34 @@ async def get_kb_mind_map(
     return kb.mind_map(industry=industry)
 
 
-@router.post("/kb/ingest", summary="Ingest a document (metadata-based) into the KB")
+@router.post("/kb/ingest", summary="Ingest a document into the KB (extracts issues from its content)")
 async def ingest_document(
-    request: IngestRequest,
+    file: UploadFile = File(...),
+    source_type: str = Form(..., alias="sourceType"),
+    industry: str = Form(...),
+    description: Optional[str] = Form(None),
     user_id: UUID = Depends(get_current_user_id),
 ) -> dict:
+    if source_type not in SOURCE_TYPE_LABELS:
+        raise HTTPException(status_code=422, detail=f"Invalid sourceType '{source_type}'")
+    if industry not in INDUSTRIES:
+        raise HTTPException(status_code=422, detail=f"Invalid industry '{industry}'")
+
+    file_bytes = await file.read()
+    if len(file_bytes) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds the 25 MB upload limit")
+
+    file_name = file.filename or "document"
+    file_type = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else "txt"
+
     job_id = ingest_jobs.start_job(
-        file_name=request.file_name,
-        source_type=request.source_type,
-        industry=request.industry,
-        description=request.description,
+        file_name=file_name,
+        source_type=source_type,
+        industry=industry,
+        description=description,
         org_id=None,
+        file_bytes=file_bytes,
+        file_type=file_type,
     )
     return {"jobId": job_id}
 

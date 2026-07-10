@@ -151,6 +151,7 @@ class IngestJob(CamelModel):
     file_name: str
     step: IngestStep
     progress: int
+    issues_created: Optional[int] = None
 
 
 class FiveWhysOutput(CamelModel):
