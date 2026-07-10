@@ -13,6 +13,7 @@ from uuid import UUID
 
 from fastapi import HTTPException
 
+from src.bounce_board import events
 from src.bounce_board.constants import PIPELINE_STAGES
 from src.core.database import db
 
@@ -138,7 +139,14 @@ def update_session(session_id: str, patch: dict) -> dict:
     result = db.admin.table(TABLE).update(patch).eq("id", session_id).execute()
     if not result.data:
         raise HTTPException(status_code=404, detail="Analysis session not found")
-    return result.data[0]
+    row = result.data[0]
+    # Push the new state to any live WebSocket subscribers. The session event
+    # carries the full API-shaped session; discussion updates get their own
+    # event so the board debate streams message-by-message.
+    events.publish(session_id, {"type": "session", "session": session_to_api(row)})
+    if "discussion" in patch and patch["discussion"] is not None:
+        events.publish(session_id, {"type": "discussion", "discussion": patch["discussion"]})
+    return row
 
 
 def delete_session(user_id: UUID, session_id: str) -> None:
