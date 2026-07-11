@@ -1,11 +1,13 @@
 """
-Bounce Board — WebSocket for live session updates.
+Bounce Board — WebSockets for live updates.
 
   WS /sessions/{session_id}/ws?token=<jwt>
+  WS /kb/ingest/{job_id}/ws?token=<jwt>
 
 Server → client events (each carries full state, never deltas):
   {"type": "session",    "session": <Session>}          on every stage/row change
   {"type": "discussion", "discussion": <DiscussionState>}  per board message
+  {"type": "ingestJob",  "job": <IngestJob>}            on every ingest step change
 
 Auth mirrors the chat WebSocket: Supabase JWT as a query parameter.
 """
@@ -15,7 +17,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from src.bounce_board import events, store
+from src.bounce_board import events, ingest, store
 from src.core.database import db
 from src.core.security import verify_supabase_jwt
 
@@ -72,3 +74,34 @@ async def session_events(websocket: WebSocket, session_id: str) -> None:
     finally:
         forwarder.cancel()
         events.unsubscribe(session_id, queue)
+
+
+@router.websocket("/kb/ingest/{job_id}/ws")
+async def ingest_job_events(websocket: WebSocket, job_id: str) -> None:
+    token = websocket.query_params.get("token")
+    payload = verify_supabase_jwt(token) if token else None
+    if not payload:
+        await websocket.close(code=4001, reason="Invalid or missing token")
+        return
+
+    job = ingest.peek_job(job_id)
+    if job is None:
+        await websocket.close(code=4004, reason="Ingest job not found")
+        return
+
+    await websocket.accept()
+    queue = events.subscribe(job_id)
+    forwarder = asyncio.create_task(_forward(queue, websocket))
+    try:
+        # Initial snapshot so the client never misses state between the HTTP
+        # upload response and the socket opening.
+        await websocket.send_json({"type": "ingestJob", "job": job})
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    except Exception:  # noqa: BLE001 — connection-level failures just end the socket
+        logger.exception("Bounce board WebSocket error for ingest job %s", job_id)
+    finally:
+        forwarder.cancel()
+        events.unsubscribe(job_id, queue)

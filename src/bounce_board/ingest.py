@@ -5,7 +5,8 @@ Real document ingestion: the route hands us the uploaded file's bytes, we
 extract text (same extractor stack as the Documents module), an LLM mines the
 distinct business issues out of it, and each issue becomes its own KB entry
 embedded into Qdrant. Jobs are tracked in-memory and stepped through
-uploading → parsing → chunking → embedding → indexed for the polling UI.
+uploading → parsing → chunking → embedding → indexed; every step change is
+published to the event broker so the job's WebSocket pushes it to the UI.
 
 If no bytes are provided (or nothing can be extracted), we fall back to a
 single metadata-based entry so the document still becomes searchable.
@@ -17,7 +18,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 
-from src.bounce_board import kb
+from src.bounce_board import events, kb
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,17 @@ def get_job(job_id: str) -> dict:
     if not job:
         raise HTTPException(status_code=404, detail="Ingest job not found")
     return job
+
+
+def peek_job(job_id: str) -> Optional[dict]:
+    """Non-raising lookup for the WebSocket endpoint."""
+    return _jobs.get(job_id)
+
+
+def _update(job: dict, **fields) -> None:
+    """Mutate a job and push the new state to its WebSocket subscribers."""
+    job.update(fields)
+    events.publish(job["jobId"], {"type": "ingestJob", "job": dict(job)})
 
 
 def start_job(
@@ -64,6 +76,12 @@ def start_job(
     return job_id
 
 
+# An extraction shorter than this is treated as suspect (e.g. pymupdf4llm
+# keeping only a PDF's headers/footers) and the next extractor is tried too;
+# the longest result wins.
+_MIN_SUBSTANTIAL_CHARS = 1_000
+
+
 def _extract_bytes(file_bytes: bytes, file_type: str) -> Optional[str]:
     """Extract text from raw bytes using the Documents module's extractor stack."""
     from src.llm.embedding_core import (
@@ -74,18 +92,26 @@ def _extract_bytes(file_bytes: bytes, file_type: str) -> Optional[str]:
     )
     from src.utils.text_utils import sanitize_text
 
-    text: Optional[str] = None
     if file_type == "pdf":
-        text = _extract_with_unstructured(file_bytes, file_type)
-        if not (text and text.strip()):
-            text = _extract_pdf_with_pymupdf(file_bytes)
-        if not (text and text.strip()):
-            text = _extract_pdf_with_ocr(file_bytes)
+        extractors = [
+            lambda: _extract_with_unstructured(file_bytes, file_type),
+            lambda: _extract_pdf_with_pymupdf(file_bytes),
+            lambda: _extract_pdf_with_ocr(file_bytes),
+        ]
     else:
-        text = _extract_with_markitdown(file_bytes, file_type)
-        if not (text and text.strip()):
-            text = _extract_with_unstructured(file_bytes, file_type)
-    return sanitize_text(text) if text and text.strip() else None
+        extractors = [
+            lambda: _extract_with_markitdown(file_bytes, file_type),
+            lambda: _extract_with_unstructured(file_bytes, file_type),
+        ]
+
+    best = ""
+    for extract in extractors:
+        text = (extract() or "").strip()
+        if len(text) > len(best):
+            best = text
+        if len(best) >= _MIN_SUBSTANTIAL_CHARS:
+            break
+    return sanitize_text(best) if best else None
 
 
 _ISSUE_MINING_PROMPT = """You analyze a business document and extract the distinct ISSUES it contains.
@@ -158,8 +184,7 @@ async def _run_job(
     job = _jobs[job_id]
     try:
         # parsing — extract text off the event loop (CPU/OCR-bound)
-        job["step"] = "parsing"
-        job["progress"] = 20
+        _update(job, step="parsing", progress=20)
         text: Optional[str] = None
         if file_bytes:
             try:
@@ -168,8 +193,7 @@ async def _run_job(
                 logger.exception("Ingest %s: text extraction failed for %s", job_id, file_name)
 
         # chunking — batch the text for the issue-mining LLM
-        job["step"] = "chunking"
-        job["progress"] = 40
+        _update(job, step="chunking", progress=40)
 
         mined: list[dict] = []
         if text:
@@ -177,8 +201,7 @@ async def _run_job(
             logger.info("Ingest %s: mined %d issues from %s (%d chars)", job_id, len(mined), file_name, len(text))
 
         # embedding — create + embed one KB entry per mined issue
-        job["step"] = "embedding"
-        job["progress"] = 60
+        _update(job, step="embedding", progress=60)
 
         created = 0
         base_title = file_name.rsplit(".", 1)[0]
@@ -197,7 +220,7 @@ async def _run_job(
                     org_id=org_id,
                 )
                 created += 1
-                job["progress"] = 60 + round(35 * (i + 1) / len(mined))
+                _update(job, progress=60 + round(35 * (i + 1) / len(mined)))
         else:
             # Fallback: no bytes or no extractable issues — index the document
             # itself as a single entry so it is still searchable.
@@ -214,11 +237,9 @@ async def _run_job(
             )
             created = 1
 
-        job["issuesCreated"] = created
-        job["step"] = "indexed"
-        job["progress"] = 100
+        _update(job, issuesCreated=created, step="indexed", progress=100)
     except Exception:  # noqa: BLE001 — surface failure via the job, not a crash
         logger.exception("Ingest job %s failed", job_id)
         # Frontend has no error step; leave the job at its last step so the
         # user sees it stalled rather than falsely indexed.
-        job["progress"] = job.get("progress", 0)
+        _update(job, progress=job.get("progress", 0))

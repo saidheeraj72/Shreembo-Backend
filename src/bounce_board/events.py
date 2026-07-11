@@ -1,11 +1,11 @@
 """
 Bounce Board — in-process event broker for live session updates.
 
-The pipeline runs as an asyncio task in the same process, so a simple
-queue-per-subscriber pub/sub is enough to push stage changes and board
-messages to connected WebSockets. Events are best-effort: if a subscriber's
-queue is full it drops the oldest event (the WS client also has polling as
-a fallback, and every event carries full state, not a delta).
+The pipeline and ingest jobs run as asyncio tasks in the same process, so a
+simple queue-per-subscriber pub/sub is enough to push stage changes, board
+messages and ingest progress to connected WebSockets. Channels are keyed by
+session id or ingest job id. If a subscriber's queue is full the oldest event
+is dropped — safe because every event carries full state, not a delta.
 """
 import asyncio
 import logging
@@ -18,24 +18,24 @@ _QUEUE_SIZE = 256
 _subscribers: dict[str, set[asyncio.Queue]] = defaultdict(set)
 
 
-def subscribe(session_id: str) -> asyncio.Queue:
+def subscribe(channel: str) -> asyncio.Queue:
     queue: asyncio.Queue = asyncio.Queue(maxsize=_QUEUE_SIZE)
-    _subscribers[session_id].add(queue)
+    _subscribers[channel].add(queue)
     return queue
 
 
-def unsubscribe(session_id: str, queue: asyncio.Queue) -> None:
-    subs = _subscribers.get(session_id)
+def unsubscribe(channel: str, queue: asyncio.Queue) -> None:
+    subs = _subscribers.get(channel)
     if not subs:
         return
     subs.discard(queue)
     if not subs:
-        _subscribers.pop(session_id, None)
+        _subscribers.pop(channel, None)
 
 
-def publish(session_id: str, event: dict) -> None:
-    """Fan an event out to all subscribers of a session (non-blocking)."""
-    for queue in _subscribers.get(session_id, ()):  # copy not needed: no await
+def publish(channel: str, event: dict) -> None:
+    """Fan an event out to all subscribers of a channel (non-blocking)."""
+    for queue in _subscribers.get(channel, ()):  # copy not needed: no await
         try:
             queue.put_nowait(event)
         except asyncio.QueueFull:
@@ -43,4 +43,4 @@ def publish(session_id: str, event: dict) -> None:
                 queue.get_nowait()  # drop oldest — events carry full state
                 queue.put_nowait(event)
             except (asyncio.QueueEmpty, asyncio.QueueFull):
-                logger.warning("Dropping bounce board event for %s", session_id)
+                logger.warning("Dropping bounce board event for %s", channel)
