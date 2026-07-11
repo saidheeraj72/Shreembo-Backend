@@ -94,19 +94,20 @@ def _extract_bytes(file_bytes: bytes, file_type: str) -> Optional[str]:
 
     if file_type == "pdf":
         extractors = [
-            lambda: _extract_with_unstructured(file_bytes, file_type),
-            lambda: _extract_pdf_with_pymupdf(file_bytes),
-            lambda: _extract_pdf_with_ocr(file_bytes),
+            ("unstructured", lambda: _extract_with_unstructured(file_bytes, file_type)),
+            ("pymupdf4llm", lambda: _extract_pdf_with_pymupdf(file_bytes)),
+            ("pymupdf+ocr", lambda: _extract_pdf_with_ocr(file_bytes)),
         ]
     else:
         extractors = [
-            lambda: _extract_with_markitdown(file_bytes, file_type),
-            lambda: _extract_with_unstructured(file_bytes, file_type),
+            ("markitdown", lambda: _extract_with_markitdown(file_bytes, file_type)),
+            ("unstructured", lambda: _extract_with_unstructured(file_bytes, file_type)),
         ]
 
     best = ""
-    for extract in extractors:
+    for name, extract in extractors:
         text = (extract() or "").strip()
+        logger.info("[BB-INGEST]   extractor %-12s -> %d chars", name, len(text))
         if len(text) > len(best):
             best = text
         if len(best) >= _MIN_SUBSTANTIAL_CHARS:
@@ -182,23 +183,41 @@ async def _run_job(
     file_type: Optional[str],
 ) -> None:
     job = _jobs[job_id]
+    logger.info(
+        "[BB-INGEST] %s START file=%s type=%s bytes=%s industry=%s source=%s",
+        job_id, file_name, file_type, len(file_bytes) if file_bytes else 0, industry, source_type,
+    )
     try:
         # parsing — extract text off the event loop (CPU/OCR-bound)
         _update(job, step="parsing", progress=20)
+        logger.info("[BB-INGEST] %s step=parsing — extracting text...", job_id)
         text: Optional[str] = None
         if file_bytes:
             try:
                 text = await asyncio.to_thread(_extract_bytes, file_bytes, file_type or "txt")
             except Exception:  # noqa: BLE001 — extraction failure falls back to metadata
-                logger.exception("Ingest %s: text extraction failed for %s", job_id, file_name)
+                logger.exception("[BB-INGEST] %s text extraction FAILED for %s", job_id, file_name)
+        else:
+            logger.warning("[BB-INGEST] %s NO file bytes received — will use metadata fallback", job_id)
+        logger.info(
+            "[BB-INGEST] %s extraction done -> %s chars",
+            job_id, len(text) if text else 0,
+        )
 
         # chunking — batch the text for the issue-mining LLM
         _update(job, step="chunking", progress=40)
 
         mined: list[dict] = []
         if text:
+            logger.info("[BB-INGEST] %s step=chunking — mining issues via LLM...", job_id)
             mined = await _mine_issues(text, file_name, description)
-            logger.info("Ingest %s: mined %d issues from %s (%d chars)", job_id, len(mined), file_name, len(text))
+            logger.info(
+                "[BB-INGEST] %s mined %d issue(s) from %s (%d chars): %s",
+                job_id, len(mined), file_name, len(text),
+                [ (m.get("title") or "?")[:60] for m in mined ] or "NONE",
+            )
+        else:
+            logger.warning("[BB-INGEST] %s no text extracted — skipping LLM mining", job_id)
 
         # embedding — create + embed one KB entry per mined issue
         _update(job, step="embedding", progress=60)
@@ -206,6 +225,7 @@ async def _run_job(
         created = 0
         base_title = file_name.rsplit(".", 1)[0]
         if mined:
+            logger.info("[BB-INGEST] %s step=embedding — creating %d KB entries...", job_id, len(mined))
             for i, raw in enumerate(mined):
                 severity = raw.get("severity") if raw.get("severity") in _SEVERITIES else "medium"
                 await kb.create_issue(
@@ -224,6 +244,10 @@ async def _run_job(
         else:
             # Fallback: no bytes or no extractable issues — index the document
             # itself as a single entry so it is still searchable.
+            logger.warning(
+                "[BB-INGEST] %s FALLBACK — no issues mined, creating single metadata entry for %s",
+                job_id, file_name,
+            )
             summary = description or f"Ingested document {file_name}."
             await kb.create_issue(
                 title=base_title,
@@ -238,8 +262,9 @@ async def _run_job(
             created = 1
 
         _update(job, issuesCreated=created, step="indexed", progress=100)
+        logger.info("[BB-INGEST] %s DONE step=indexed issuesCreated=%d", job_id, created)
     except Exception:  # noqa: BLE001 — surface failure via the job, not a crash
-        logger.exception("Ingest job %s failed", job_id)
+        logger.exception("[BB-INGEST] %s FAILED", job_id)
         # Frontend has no error step; leave the job at its last step so the
         # user sees it stalled rather than falsely indexed.
         _update(job, progress=job.get("progress", 0))
