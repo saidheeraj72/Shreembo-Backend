@@ -152,6 +152,9 @@ class IngestJob(CamelModel):
     step: IngestStep
     progress: int
     issues_created: Optional[int] = None
+    chars_extracted: Optional[int] = None
+    chunks: Optional[int] = None
+    truncated: bool = False
 
 
 class FiveWhysOutput(CamelModel):
