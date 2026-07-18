@@ -87,6 +87,14 @@ class SessionInput(CamelModel):
     kpis: List[KpiInput] = Field(default_factory=list)
 
 
+class ContextDetectRequest(CamelModel):
+    """Wizard preview: detect context from the draft before a session exists."""
+
+    title: Optional[str] = None
+    problem_statement: str
+    kpis: List[KpiInput] = Field(default_factory=list)
+
+
 class IndustryScore(CamelModel):
     industry: IndustryId
     confidence: float

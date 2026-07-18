@@ -2,6 +2,7 @@
 Bounce Board — analysis session endpoints.
 
   GET    /stats                          headline numbers for the dashboard
+  POST   /detect-context                 wizard preview: detect context from the draft
   GET    /sessions                       list the user's analyses
   POST   /sessions                       create a draft analysis
   GET    /sessions/{id}                  full session (pushed over WS while running)
@@ -31,6 +32,8 @@ from src.models.bounce_board import (
     BounceBoardStats,
     ChatMessage,
     ChatRequest,
+    ContextDetection,
+    ContextDetectRequest,
     DiscussionMessage,
     DiscussionState,
     IndustryAgent,
@@ -70,6 +73,22 @@ async def get_stats(user: dict = Depends(get_current_user)) -> dict:
 @router.get("/sessions", response_model=list[SessionSummary], summary="List analyses")
 async def list_sessions(user: dict = Depends(get_current_user)) -> list[dict]:
     return [store.session_to_summary(row) for row in store.list_sessions(_user_id(user))]
+
+
+@router.post(
+    "/detect-context",
+    response_model=ContextDetection,
+    summary="Preview context detection for the wizard (before a session exists)",
+)
+async def detect_context(
+    req: ContextDetectRequest,
+    user: dict = Depends(get_current_user),
+) -> dict:
+    try:
+        return await pipeline.detect_context_preview(req.model_dump(by_alias=True))
+    except Exception as e:  # noqa: BLE001 — surfaced as a soft failure in the wizard
+        logger.warning("Context detection preview failed: %s", e)
+        raise HTTPException(status_code=502, detail="Context detection failed") from e
 
 
 @router.post("/sessions", response_model=Session, summary="Create a draft analysis")

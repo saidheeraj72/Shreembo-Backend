@@ -253,6 +253,11 @@ async def _detect_context(
     return context
 
 
+async def detect_context_preview(input_camel: dict) -> dict:
+    """One-shot context detection for the wizard preview (no session/attachments yet)."""
+    return await _detect_context(_client(), input_camel, "", _Usage())
+
+
 # ---------------------------------------------------------------------------
 # Board composition (dynamic agents)
 # ---------------------------------------------------------------------------
