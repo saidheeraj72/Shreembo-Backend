@@ -75,6 +75,7 @@ def start_job(
         "charsExtracted": None,
         "chunks": None,
         "truncated": False,
+        "error": None,
     }
     asyncio.create_task(
         _run_job(job_id, file_name, source_type, industry, description, org_id, file_bytes, file_type)
@@ -387,8 +388,10 @@ async def _run_job(
 
         _update(job, issuesCreated=created, step="indexed", progress=100)
         logger.info("[BB-INGEST] %s DONE step=indexed issuesCreated=%d", job_id, created)
-    except Exception:  # noqa: BLE001 — surface failure via the job, not a crash
+    except Exception as e:  # noqa: BLE001 — surface failure via the job, not a crash
         logger.exception("[BB-INGEST] %s FAILED", job_id)
-        # Frontend has no error step; leave the job at its last step so the
-        # user sees it stalled rather than falsely indexed.
-        _update(job, progress=job.get("progress", 0))
+        _update(
+            job,
+            step="error",
+            error=f"Ingestion failed while {job.get('step', 'processing')}: {type(e).__name__}",
+        )

@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from src.bounce_board import ingest as ingest_jobs
 from src.bounce_board import kb
 from src.bounce_board.constants import INDUSTRIES, SOURCE_TYPE_LABELS
-from src.core.dependencies import get_current_user_id
+from src.core.dependencies import get_current_user, get_current_user_id
 from src.models.bounce_board import (
     IngestJob,
     KBIssue,
@@ -35,25 +35,27 @@ async def list_kb_issues(
     industry: Optional[str] = Query(None),
     source_type: Optional[str] = Query(None, alias="sourceType"),
     search: Optional[str] = Query(None),
-    user_id: UUID = Depends(get_current_user_id),
+    user: dict = Depends(get_current_user),
 ) -> list[dict]:
-    return kb.list_issues(industry=industry, source_type=source_type, search=search)
+    return kb.list_issues(
+        industry=industry, source_type=source_type, search=search, org_id=user.get("org_id")
+    )
 
 
 @router.get("/kb/issues/{issue_id}", response_model=KBIssue, summary="Get one KB entry")
 async def get_kb_issue(
     issue_id: str,
-    user_id: UUID = Depends(get_current_user_id),
+    user: dict = Depends(get_current_user),
 ) -> dict:
-    return kb.get_issue(issue_id)
+    return kb.get_issue(issue_id, org_id=user.get("org_id"))
 
 
 @router.get("/kb/mind-map", response_model=KBMindMap, summary="Knowledge base mind map")
 async def get_kb_mind_map(
     industry: Optional[str] = Query(None),
-    user_id: UUID = Depends(get_current_user_id),
+    user: dict = Depends(get_current_user),
 ) -> dict:
-    return kb.mind_map(industry=industry)
+    return kb.mind_map(industry=industry, org_id=user.get("org_id"))
 
 
 @router.post("/kb/ingest", summary="Ingest a document into the KB (extracts issues from its content)")
@@ -62,7 +64,7 @@ async def ingest_document(
     source_type: str = Form(..., alias="sourceType"),
     industry: str = Form(...),
     description: Optional[str] = Form(None),
-    user_id: UUID = Depends(get_current_user_id),
+    user: dict = Depends(get_current_user),
 ) -> dict:
     if source_type not in SOURCE_TYPE_LABELS:
         raise HTTPException(status_code=422, detail=f"Invalid sourceType '{source_type}'")
@@ -81,7 +83,7 @@ async def ingest_document(
         source_type=source_type,
         industry=industry,
         description=description,
-        org_id=None,
+        org_id=user.get("org_id"),
         file_bytes=file_bytes,
         file_type=file_type,
     )

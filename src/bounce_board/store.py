@@ -22,7 +22,9 @@ logger = logging.getLogger(__name__)
 TABLE = "bounce_board_sessions"
 
 # A "running" session whose runner died (server restart) is stale after this.
-STALE_RUNNING_AFTER = timedelta(minutes=2)
+# Generous: the pipeline touches the row at least once per stage / framework /
+# board message, so a healthy run never goes quiet anywhere near this long.
+STALE_RUNNING_AFTER = timedelta(minutes=6)
 
 
 def _now() -> str:
@@ -31,6 +33,69 @@ def _now() -> str:
 
 def fresh_stages() -> list[dict]:
     return [{"id": s, "status": "pending"} for s in PIPELINE_STAGES]
+
+
+# Which JSONB artifacts each stage produces — cleared when (re)running it.
+STAGE_ARTIFACTS: dict[str, list[str]] = {
+    "intake": [],
+    "context_detection": ["context"],
+    "agent_routing": ["board", "routed_agent_id"],
+    "knowledge_retrieval": ["retrieved_sources"],
+    "framework_analysis": ["frameworks"],
+    "board_discussion": ["discussion"],
+    "decision_ranking": ["recommendations"],
+    "critique": [],
+    "report_generation": ["report"],
+    "complete": [],
+}
+
+
+def reset_patch(row: dict, from_stage: Optional[str] = None) -> tuple[dict, str]:
+    """Build the update patch that prepares a session for a (re)run.
+
+    With a valid ``from_stage`` (and all earlier stages complete) only the
+    stages from that point are reset and their artifacts cleared; otherwise a
+    full clean rerun is prepared. Attachments are user uploads, never cleared.
+    Returns (patch, effective_from_stage).
+    """
+    existing_ids = [s.get("id") for s in (row.get("stages") or [])]
+    can_resume = (
+        from_stage in PIPELINE_STAGES
+        and from_stage not in ("intake", "complete")
+        and existing_ids == PIPELINE_STAGES
+        and all(
+            s.get("status") == "complete"
+            for s in row["stages"]
+            if PIPELINE_STAGES.index(s["id"]) < PIPELINE_STAGES.index(from_stage)
+        )
+    )
+    if can_resume:
+        resume_idx = PIPELINE_STAGES.index(from_stage)
+        stages = [
+            s if PIPELINE_STAGES.index(s["id"]) < resume_idx else {"id": s["id"], "status": "pending"}
+            for s in row["stages"]
+        ]
+        patch: dict = {"status": "running", "current_stage": from_stage, "stages": stages}
+        for stage_id in PIPELINE_STAGES[resume_idx:]:
+            for artifact in STAGE_ARTIFACTS.get(stage_id, []):
+                patch[artifact] = None
+        return patch, from_stage
+    return (
+        {
+            "status": "running",
+            "current_stage": "intake",
+            "stages": fresh_stages(),
+            "context": None,
+            "routed_agent_id": None,
+            "board": None,
+            "retrieved_sources": None,
+            "frameworks": None,
+            "discussion": None,
+            "recommendations": None,
+            "report": None,
+        },
+        "intake",
+    )
 
 
 def _excerpt(text: str, length: int = 140) -> str:
@@ -59,12 +124,18 @@ def session_to_summary(row: dict) -> dict:
 
 
 def session_to_api(row: dict) -> dict:
+    # Attachment text stays server-side; the client only needs the metadata.
+    attachments = [
+        {k: v for k, v in a.items() if k != "text"} for a in (row.get("attachments") or [])
+    ] or None
     return {
         **session_to_summary(row),
         "input": row.get("input") or {},
         "stages": row.get("stages") or fresh_stages(),
         "context": row.get("context"),
         "routedAgentId": row.get("routed_agent_id"),
+        "board": row.get("board"),
+        "attachments": attachments,
         "retrievedSources": row.get("retrieved_sources"),
         "frameworks": row.get("frameworks"),
     }
@@ -126,7 +197,7 @@ def _recover_if_stale(row: dict) -> dict:
     if datetime.now(timezone.utc) - updated < STALE_RUNNING_AFTER:
         return row
     stages = [
-        {**s, "status": "error", "detail": "Interrupted by a server restart — rerun the analysis."}
+        {**s, "status": "error", "detail": "Interrupted by a server restart — retry from this stage."}
         if s.get("status") == "running"
         else s
         for s in (row.get("stages") or [])
@@ -146,6 +217,8 @@ def update_session(session_id: str, patch: dict) -> dict:
     events.publish(session_id, {"type": "session", "session": session_to_api(row)})
     if "discussion" in patch and patch["discussion"] is not None:
         events.publish(session_id, {"type": "discussion", "discussion": patch["discussion"]})
+    if "copilot_chat" in patch and patch["copilot_chat"] is not None:
+        events.publish(session_id, {"type": "chat", "chat": patch["copilot_chat"]})
     return row
 
 

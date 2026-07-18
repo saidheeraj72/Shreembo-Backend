@@ -8,6 +8,7 @@ PIPELINE_STAGES = [
     "framework_analysis",
     "board_discussion",
     "decision_ranking",
+    "critique",
     "report_generation",
     "complete",
 ]
@@ -15,13 +16,16 @@ PIPELINE_STAGES = [
 STAGE_DETAILS = {
     "intake": "Parsed problem statement, attachments and KPI data",
     "context_detection": "Detected industry, department, problem type and role",
-    "agent_routing": "Routed to the best-fit industry agent",
+    "agent_routing": "Composed a problem-specific expert board",
     "knowledge_retrieval": "Searched regulations, SOPs, incidents and best practices",
-    "framework_analysis": "Ran Root Cause, 5 Whys, SWOT, Gap, Risk and KPI analysis",
+    "framework_analysis": "Ran the analysis frameworks selected for this problem",
     "board_discussion": "AI executive board debated the findings",
     "decision_ranking": "Ranked recommendations by impact, cost, risk, urgency, feasibility",
+    "critique": "Red-team pass challenged each recommendation against the evidence",
     "report_generation": "Compiled the management report",
 }
+
+FRAMEWORK_IDS = ["five_whys", "root_cause", "swot", "gap", "risk", "kpi"]
 
 INDUSTRIES = ["shipping", "healthcare", "manufacturing", "logistics"]
 
@@ -128,6 +132,29 @@ DISCUSSION_ROUNDS = [
     {"round": 2, "topic": "Solution shaping", "speakers": ["coo", "cto", "risk_expert"]},
     {"round": 3, "topic": "Decision round", "speakers": ["risk_expert", "cfo", "ceo"]},
 ]
+
+
+def default_board(industry: str) -> dict:
+    """Static fallback board (the pre-v2 fixed cast) used when dynamic board
+    composition fails — the pipeline must never die because one LLM call did."""
+    agent = AGENT_BY_INDUSTRY.get(industry) or AGENT_BY_INDUSTRY["manufacturing"]
+    return {
+        "expert": {
+            "id": agent["id"],
+            "name": agent["name"],
+            "title": agent["name"],
+            "description": agent["description"],
+            "expertise": agent["expertise"],
+            "industryLabel": industry,
+        },
+        "personas": [
+            {"id": pid, "name": p["name"], "title": p["title"], "focus": p["focus"]}
+            for pid, p in PERSONAS.items()
+        ],
+        "rounds": DISCUSSION_ROUNDS,
+        "frameworks": ["five_whys", "root_cause", "swot", "gap", "risk"],
+        "rationale": "Default executive board (dynamic composition unavailable).",
+    }
 
 KB_COLLECTION = "bounce-board-kb"
 KB_NAMESPACE = "bb-kb"

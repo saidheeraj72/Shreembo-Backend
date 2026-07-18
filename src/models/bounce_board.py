@@ -27,6 +27,7 @@ PipelineStageId = Literal[
     "framework_analysis",
     "board_discussion",
     "decision_ranking",
+    "critique",
     "report_generation",
     "complete",
 ]
@@ -34,9 +35,10 @@ StageStatus = Literal["pending", "running", "complete", "error"]
 SessionStatus = Literal["draft", "running", "complete", "error"]
 KBSourceType = Literal["regulation", "sop", "manual", "incident", "best_practice", "company_doc"]
 Severity = Literal["low", "medium", "high", "critical"]
-AgentPersonaId = Literal["ceo", "cfo", "coo", "cto", "industry_expert", "risk_expert"]
+# Persona ids are dynamic (the board is composed per problem), so plain str.
+AgentPersonaId = str
 Sentiment = Literal["support", "concern", "question", "neutral"]
-IngestStep = Literal["uploading", "parsing", "chunking", "embedding", "indexed"]
+IngestStep = Literal["uploading", "parsing", "chunking", "embedding", "indexed", "error"]
 
 
 class StageState(CamelModel):
@@ -52,6 +54,18 @@ class AttachmentMeta(CamelModel):
     name: str
     size_bytes: int
     mime_type: str
+
+
+class SessionAttachment(CamelModel):
+    """An uploaded session document with its extracted text (stored on the row)."""
+
+    id: str
+    name: str
+    size_bytes: int
+    mime_type: str
+    chars_extracted: int = 0
+    # Full text is kept in the JSONB column but never serialized to the client.
+    text: Optional[str] = Field(default=None, exclude=True)
 
 
 class KpiInput(CamelModel):
@@ -80,12 +94,47 @@ class IndustryScore(CamelModel):
 
 class ContextDetection(CamelModel):
     industry: IndustryId
+    # Free-text specific domain (e.g. "Cold-chain pharma distribution") so the
+    # board is composed for the real domain, not just the 4 canonical buckets.
+    industry_label: Optional[str] = None
     industry_scores: List[IndustryScore]
     department: str
     problem_type: ProblemType
     user_role: str
     keywords: List[str]
     summary: str
+
+
+class BoardExpert(CamelModel):
+    id: str
+    name: str
+    title: str
+    description: str
+    expertise: List[str]
+    industry_label: str
+
+
+class BoardPersona(CamelModel):
+    id: str
+    name: str
+    title: str
+    focus: str
+
+
+class BoardRound(CamelModel):
+    round: int
+    topic: str
+    speakers: List[str]
+
+
+class BoardPlan(CamelModel):
+    """The dynamically composed board for one session."""
+
+    expert: BoardExpert
+    personas: List[BoardPersona]
+    rounds: List[BoardRound]
+    frameworks: List[str]
+    rationale: str = ""
 
 
 class IndustryAgent(CamelModel):
@@ -155,6 +204,7 @@ class IngestJob(CamelModel):
     chars_extracted: Optional[int] = None
     chunks: Optional[int] = None
     truncated: bool = False
+    error: Optional[str] = None
 
 
 class FiveWhysOutput(CamelModel):
@@ -223,6 +273,11 @@ class RecommendationScores(CamelModel):
     feasibility: int
 
 
+class RecommendationCritique(CamelModel):
+    verdict: Literal["grounded", "weak", "rejected"]
+    note: str
+
+
 class Recommendation(CamelModel):
     id: str
     rank: int
@@ -234,6 +289,8 @@ class Recommendation(CamelModel):
     estimated_cost: float
     estimated_roi_pct: float
     effort_weeks: int
+    assumptions: List[str] = Field(default_factory=list)
+    critique: Optional[RecommendationCritique] = None
     supporting_agents: List[AgentPersonaId] = Field(default_factory=list)
     dissenting_agents: List[AgentPersonaId] = Field(default_factory=list)
     source_refs: List[RetrievedSource] = Field(default_factory=list)
@@ -265,6 +322,14 @@ class CostRoi(CamelModel):
     expected_roi_pct: float
     payback_months: int
     breakdown: List[CostBreakdownItem]
+    # Every figure above is an estimate; these are the stated assumptions it rests on.
+    assumptions: List[str] = Field(default_factory=list)
+
+
+class TokenUsage(CamelModel):
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    llm_calls: int = 0
 
 
 class RiskRegisterEntry(CamelModel):
@@ -286,6 +351,7 @@ class Report(CamelModel):
     cost_roi: CostRoi
     risk_register: List[RiskRegisterEntry]
     management_report_md: str
+    token_usage: Optional[TokenUsage] = None
 
 
 class SessionSummary(CamelModel):
@@ -305,8 +371,33 @@ class Session(SessionSummary):
     stages: List[StageState]
     context: Optional[ContextDetection] = None
     routed_agent_id: Optional[str] = None
+    board: Optional[BoardPlan] = None
+    attachments: Optional[List[SessionAttachment]] = None
     retrieved_sources: Optional[List[RetrievedSource]] = None
     frameworks: Optional[List[dict]] = None
+
+
+class AskBoardRequest(CamelModel):
+    question: str
+    persona_id: Optional[str] = None
+
+
+class ChatAction(CamelModel):
+    type: str
+    summary: str
+    ok: bool = True
+
+
+class ChatMessage(CamelModel):
+    id: str
+    role: Literal["user", "assistant"]
+    content_md: str
+    actions: List[ChatAction] = Field(default_factory=list)
+    timestamp: str
+
+
+class ChatRequest(CamelModel):
+    message: str
 
 
 class BounceBoardStats(CamelModel):

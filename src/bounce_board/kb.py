@@ -6,6 +6,7 @@ collection `bounce-board-kb` under the single shared namespace `bb-kb`
 (industry / source_type / org_id are payload filters, not namespaces, so the
 seeded global KB and org uploads are searched together).
 """
+import asyncio
 import logging
 from typing import Optional
 
@@ -46,8 +47,15 @@ def list_issues(
     industry: Optional[str] = None,
     source_type: Optional[str] = None,
     search: Optional[str] = None,
+    org_id: Optional[str] = None,
 ) -> list[dict]:
+    """List KB issues visible to the caller: global entries (org_id NULL) plus
+    the caller's own org's entries — never another org's uploads."""
     q = db.admin.table(TABLE).select("*").order("created_at", desc=True)
+    if org_id:
+        q = q.or_(f"org_id.is.null,org_id.eq.{org_id}")
+    else:
+        q = q.is_("org_id", "null")
     if industry:
         q = q.eq("industry", industry)
     if source_type:
@@ -65,15 +73,23 @@ def list_issues(
     return [issue_to_api(r) for r in rows]
 
 
-def get_issue(issue_id: str) -> dict:
+def get_issue(issue_id: str, org_id: Optional[str] = None) -> dict:
     result = db.admin.table(TABLE).select("*").eq("id", issue_id).maybe_single().execute()
     if not result or not result.data:
+        raise HTTPException(status_code=404, detail="Knowledge base entry not found")
+    row_org = result.data.get("org_id")
+    if row_org and row_org != org_id:
         raise HTTPException(status_code=404, detail="Knowledge base entry not found")
     return issue_to_api(result.data)
 
 
-def count_issues() -> int:
-    result = db.admin.table(TABLE).select("id", count="exact").execute()
+def count_issues(org_id: Optional[str] = None) -> int:
+    q = db.admin.table(TABLE).select("id", count="exact")
+    if org_id:
+        q = q.or_(f"org_id.is.null,org_id.eq.{org_id}")
+    else:
+        q = q.is_("org_id", "null")
+    result = q.execute()
     return result.count or 0
 
 
@@ -134,56 +150,98 @@ async def embed_issue(row: dict) -> None:
     )
 
 
+# Matches scoring below this are noise — citing them would be false grounding.
+MIN_RELEVANCE = 0.25
+# How much of each source's full content is handed to the LLM stages.
+_CONTENT_CHARS = 2_000
+
+
 async def search(
     query_text: str,
     industry: Optional[str] = None,
     top_k: int = 5,
+    org_id: Optional[str] = None,
 ) -> list[dict]:
-    """Semantic search over the KB; returns RetrievedSource dicts (camelCase)."""
+    """Semantic search over the KB; returns RetrievedSource dicts (camelCase).
+
+    Only global entries (org_id NULL) and the caller org's entries are returned.
+    Each source carries `contentMd` (capped) for LLM grounding — the API models
+    drop it on serialization so it never bloats client payloads.
+    """
     vector = await openai_client.get_embedding(query_text)
+    # Over-fetch so the org post-filter and relevance floor still leave top_k.
     matches = await qdrant_client.query(
         vector=vector,
         namespace=KB_NAMESPACE,
-        top_k=top_k,
+        top_k=top_k * 4,
         filter={"industry": industry} if industry else None,
         index_name=KB_COLLECTION,
     )
-    sources = [
-        {
-            "kbIssueId": m.metadata.get("kb_issue_id"),
-            "title": m.metadata.get("title") or "",
-            "sourceType": m.metadata.get("source_type") or "company_doc",
-            "relevance": round(max(0.0, min(1.0, float(m.score))), 3),
-            "excerpt": m.metadata.get("excerpt") or "",
-        }
-        for m in matches
-        if m.metadata.get("kb_issue_id")
-    ]
-    _bump_reference_counts([s["kbIssueId"] for s in sources])
+    sources = []
+    for m in matches:
+        if not m.metadata.get("kb_issue_id"):
+            continue
+        match_org = m.metadata.get("org_id")
+        if match_org and match_org != org_id:
+            continue
+        score = max(0.0, min(1.0, float(m.score)))
+        if score < MIN_RELEVANCE:
+            continue
+        sources.append(
+            {
+                "kbIssueId": m.metadata.get("kb_issue_id"),
+                "title": m.metadata.get("title") or "",
+                "sourceType": m.metadata.get("source_type") or "company_doc",
+                "relevance": round(score, 3),
+                "excerpt": m.metadata.get("excerpt") or "",
+            }
+        )
+        if len(sources) >= top_k:
+            break
+    await asyncio.to_thread(_enrich_with_content, sources)
+    await asyncio.to_thread(_bump_reference_counts, [s["kbIssueId"] for s in sources])
     return sources
 
 
+def _enrich_with_content(sources: list[dict]) -> None:
+    """Attach each source's full content_md (capped) for downstream prompts."""
+    if not sources:
+        return
+    try:
+        rows = (
+            db.admin.table(TABLE)
+            .select("id, content_md")
+            .in_("id", [s["kbIssueId"] for s in sources])
+            .execute()
+        ).data or []
+        content_by_id = {r["id"]: r.get("content_md") or "" for r in rows}
+        for s in sources:
+            s["contentMd"] = content_by_id.get(s["kbIssueId"], "")[:_CONTENT_CHARS]
+    except Exception:  # noqa: BLE001 — grounding depth is best-effort
+        logger.warning("Failed to enrich KB sources with content", exc_info=True)
+
+
 def _bump_reference_counts(issue_ids: list[str]) -> None:
-    for issue_id in issue_ids:
-        try:
-            row = (
-                db.admin.table(TABLE)
-                .select("times_referenced")
-                .eq("id", issue_id)
-                .maybe_single()
-                .execute()
-            )
-            if row and row.data:
-                db.admin.table(TABLE).update(
-                    {"times_referenced": (row.data.get("times_referenced") or 0) + 1}
-                ).eq("id", issue_id).execute()
-        except Exception:  # noqa: BLE001 — counters must never break retrieval
-            logger.debug("Failed to bump reference count for %s", issue_id)
+    if not issue_ids:
+        return
+    try:
+        rows = (
+            db.admin.table(TABLE)
+            .select("id, times_referenced")
+            .in_("id", issue_ids)
+            .execute()
+        ).data or []
+        for row in rows:
+            db.admin.table(TABLE).update(
+                {"times_referenced": (row.get("times_referenced") or 0) + 1}
+            ).eq("id", row["id"]).execute()
+    except Exception:  # noqa: BLE001 — counters must never break retrieval
+        logger.debug("Failed to bump reference counts for %s", issue_ids)
 
 
-def mind_map(industry: Optional[str] = None) -> dict:
+def mind_map(industry: Optional[str] = None, org_id: Optional[str] = None) -> dict:
     """Industry → source-type category → issue graph (same shape as the mock)."""
-    rows = list_issues(industry=industry)
+    rows = list_issues(industry=industry, org_id=org_id)
     nodes: list[dict] = []
     edges: list[dict] = []
     industries = sorted({r["industry"] for r in rows})
