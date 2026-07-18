@@ -400,6 +400,26 @@ class ChatRequest(CamelModel):
     message: str
 
 
+class EmailIssueImportItem(CamelModel):
+    """One issue row from an email-agent mailbox scan, selected for KB import."""
+
+    key: str
+    title: str
+    summary: str = ""
+    severity: str = "medium"          # email scans use low/medium/high
+    solved: bool = False
+    solution: str = ""
+    occurrences: int = 0
+    first_raised: Optional[str] = None
+    last_raised: Optional[str] = None
+
+
+class ImportEmailIssuesRequest(CamelModel):
+    industry: IndustryId
+    account_email: Optional[str] = None
+    issues: List[EmailIssueImportItem] = Field(min_length=1, max_length=40)
+
+
 class BounceBoardStats(CamelModel):
     total_sessions: int
     running_sessions: int

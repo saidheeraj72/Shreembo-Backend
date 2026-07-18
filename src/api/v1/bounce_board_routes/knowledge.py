@@ -18,6 +18,7 @@ from src.bounce_board import kb
 from src.bounce_board.constants import INDUSTRIES, SOURCE_TYPE_LABELS
 from src.core.dependencies import get_current_user, get_current_user_id
 from src.models.bounce_board import (
+    ImportEmailIssuesRequest,
     IngestJob,
     KBIssue,
     KBMindMap,
@@ -88,6 +89,59 @@ async def ingest_document(
         file_type=file_type,
     )
     return {"jobId": job_id}
+
+
+@router.post(
+    "/kb/import-email-issues",
+    response_model=list[KBIssue],
+    summary="Import issues mined from a connected mailbox into the KB",
+)
+async def import_email_issues(
+    request: ImportEmailIssuesRequest,
+    user: dict = Depends(get_current_user),
+) -> list[dict]:
+    """Turn selected email-scan issue rows into KB entries.
+
+    Solved issues carry a documented resolution, so they land as best
+    practices; unsolved ones are incidents. Severity maps 1:1 (email scans
+    never emit "critical").
+    """
+    created: list[dict] = []
+    for item in request.issues:
+        severity = item.severity if item.severity in ("low", "medium", "high") else "medium"
+        source_type = "best_practice" if item.solved else "incident"
+
+        facts = [f"Raised in **{item.occurrences}** email(s)" if item.occurrences else None]
+        if item.first_raised:
+            facts.append(f"first raised {item.first_raised[:10]}")
+        if item.last_raised:
+            facts.append(f"last raised {item.last_raised[:10]}")
+        fact_line = ", ".join(f for f in facts if f)
+
+        content_lines = [f"## {item.title}", "", item.summary or ""]
+        if fact_line:
+            content_lines += ["", fact_line + "."]
+        if item.solved and item.solution:
+            content_lines += ["", "**Resolution**", "", item.solution]
+        content_lines += [
+            "",
+            "---",
+            f"*Imported from mailbox scan{f' of {request.account_email}' if request.account_email else ''}.*",
+        ]
+
+        created.append(
+            await kb.create_issue(
+                title=item.title,
+                industry=request.industry,
+                source_type=source_type,
+                severity=severity,
+                summary=item.summary or item.title,
+                content_md="\n".join(content_lines),
+                tags=[t for t in {item.key.replace("_", "-"), "email"} if t][:4],
+                org_id=user.get("org_id"),
+            )
+        )
+    return created
 
 
 @router.get("/kb/ingest/{job_id}", response_model=IngestJob, summary="Poll an ingest job")

@@ -18,7 +18,7 @@ STAGE_DETAILS = {
     "context_detection": "Detected industry, department, problem type and role",
     "agent_routing": "Composed a problem-specific expert board",
     "knowledge_retrieval": "Searched regulations, SOPs, incidents and best practices",
-    "framework_analysis": "Ran the analysis frameworks selected for this problem",
+    "framework_analysis": "Ran Take 5, Root Cause, SWOT, Gap, Risk and KPI analysis",
     "board_discussion": "AI executive board debated the findings",
     "decision_ranking": "Ranked recommendations by impact, cost, risk, urgency, feasibility",
     "critique": "Red-team pass challenged each recommendation against the evidence",
@@ -26,6 +26,16 @@ STAGE_DETAILS = {
 }
 
 FRAMEWORK_IDS = ["five_whys", "root_cause", "swot", "gap", "risk", "kpi"]
+
+# Display names ("five_whys" is branded "Take 5" in the product).
+FRAMEWORK_LABELS = {
+    "five_whys": "Take 5",
+    "root_cause": "Root Cause",
+    "swot": "SWOT",
+    "gap": "Gap Analysis",
+    "risk": "Risk Matrix",
+    "kpi": "KPI Analysis",
+}
 
 INDUSTRIES = ["shipping", "healthcare", "manufacturing", "logistics"]
 
@@ -152,7 +162,7 @@ def default_board(industry: str) -> dict:
             for pid, p in PERSONAS.items()
         ],
         "rounds": DISCUSSION_ROUNDS,
-        "frameworks": ["five_whys", "root_cause", "swot", "gap", "risk"],
+        "frameworks": [f for f in FRAMEWORK_IDS if f != "kpi"],
         "rationale": "Default executive board (dynamic composition unavailable).",
     }
 

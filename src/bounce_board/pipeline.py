@@ -36,6 +36,7 @@ from src.bounce_board import kb, store
 from src.bounce_board.constants import (
     AGENT_BY_INDUSTRY,
     FRAMEWORK_IDS,
+    FRAMEWORK_LABELS,
     INDUSTRIES,
     STAGE_DETAILS,
     default_board,
@@ -282,7 +283,6 @@ Return STRICT JSON:
     exactly 3: {"round": 1, "topic": "short topic tailored to the problem", "speakers": ["persona ids", 3 per round]}
     Round 3 must converge on a decision and its last speaker must be the chair.
   ],
-  "frameworks": ["3-5 of: five_whys, root_cause, swot, gap, risk, kpi — the ones that genuinely fit this problem type. Include kpi ONLY if KPI data was provided."],
   "rationale": "1-2 sentences on why this board fits the problem"
 }"""
 
@@ -336,18 +336,13 @@ def _validate_board(data: dict, context: dict, has_kpis: bool) -> dict:
     if rounds[-1]["speakers"][-1] != chair_id:
         rounds[-1]["speakers"] = (rounds[-1]["speakers"] + [chair_id])[-3:]
 
-    frameworks = [f for f in (data.get("frameworks") or []) if f in FRAMEWORK_IDS]
-    if not has_kpis:
-        frameworks = [f for f in frameworks if f != "kpi"]
-    if len(frameworks) < 3:
-        fallback = [f for f in ("five_whys", "root_cause", "risk", "gap") if f not in frameworks]
-        frameworks = (frameworks + fallback)[:4]
-
     return {
         "expert": expert,
         "personas": personas,
         "rounds": rounds,
-        "frameworks": frameworks,
+        # All frameworks always run; KPI only when the user provided KPI data
+        # (running it without inputs would mean fabricating numbers).
+        "frameworks": [f for f in FRAMEWORK_IDS if f != "kpi" or has_kpis],
         "rationale": str(data.get("rationale") or ""),
     }
 
@@ -390,7 +385,7 @@ async def _compose_board(
 # ---------------------------------------------------------------------------
 
 _FRAMEWORK_PROMPTS = {
-    "five_whys": """Run a 5 Whys analysis on the given business problem.
+    "five_whys": """Run a "Take 5" (5 Whys) root-cause analysis on the given business problem.
 Ground every answer in the provided problem, documents and knowledge sources.
 Return STRICT JSON:
 {"problem": "one sentence restating the problem",
@@ -994,11 +989,8 @@ async def _run(session_id: str) -> None:
             frameworks = session["frameworks"]
         else:
             session = _set_stage(session, "framework_analysis", "running")
-            selected = [f for f in board.get("frameworks") or [] if f in _FRAMEWORK_PROMPTS]
-            if not selected:
-                selected = ["five_whys", "root_cause", "risk", "gap"]
-            if has_kpis and "kpi" not in selected:
-                selected.append("kpi")
+            # Every framework runs on every problem; KPI needs user KPI data.
+            selected = [f for f in FRAMEWORK_IDS if f != "kpi" or has_kpis]
             fw_payload = {
                 "problem": problem,
                 "context": context,
@@ -1027,7 +1019,8 @@ async def _run(session_id: str) -> None:
                 session,
                 "framework_analysis",
                 "complete",
-                "Ran " + ", ".join(selected).replace("_", " "),
+                "Ran " + ", ".join(FRAMEWORK_LABELS.get(f, f) for f in selected)
+                + ("" if has_kpis else " (add KPI data to include KPI analysis)"),
             )
         digest = _frameworks_digest(frameworks)
 
