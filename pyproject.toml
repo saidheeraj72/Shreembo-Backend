@@ -27,4 +27,6 @@ dependencies = [
     "resend",
     "pymupdf",
     "pymupdf4llm",
+    "fpdf2",
+    "python-docx",
 ]

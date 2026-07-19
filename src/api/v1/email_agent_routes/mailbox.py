@@ -188,8 +188,6 @@ async def build_issue_table(
         query=request.query,
         max_emails=request.max_emails,
     )
-    # Cache the latest snapshot so the table loads instantly next time.
-    issue_builder.save_scan(account_id, user_id, result, query=request.query)
     return IssueTableResponse(
         account_id=account_id,
         issues=result["issues"],
@@ -201,20 +199,13 @@ async def build_issue_table(
 @router.get(
     "/accounts/{account_id}/issues",
     response_model=IssueTableResponse | None,
-    summary="Get the latest cached issues scan (null if never scanned)",
+    summary="Get the latest cached issues scan (always null — scan caching was removed)",
 )
 async def get_issue_table(
     account_id: UUID,
     user_id: UUID = Depends(get_current_user_id),
 ) -> IssueTableResponse | None:
-    # Ensure the account belongs to the user before returning its cached scan.
+    # Scan caching (email_issue_scans table) was removed; scans are computed
+    # on demand via POST. Kept so existing clients see "never scanned".
     await account_store.get_account(user_id, account_id)
-    snapshot = issue_builder.get_latest_scan(account_id, user_id)
-    if not snapshot:
-        return None
-    return IssueTableResponse(
-        account_id=account_id,
-        issues=snapshot["issues"],
-        email_count=snapshot["email_count"],
-        generated_at=snapshot["generated_at"],
-    )
+    return None

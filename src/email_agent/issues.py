@@ -15,12 +15,10 @@ import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Optional
-from uuid import UUID
 
 from openai import AsyncOpenAI
 
 from src.config import settings
-from src.core.database import db
 from src.email_agent import accounts as account_store
 from src.email_agent import gmail_client
 
@@ -247,38 +245,3 @@ async def build_issue_table(
         "email_count": scanned,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
-
-
-def save_scan(
-    account_id: UUID,
-    user_id: UUID,
-    result: dict,
-    query: Optional[str] = None,
-) -> None:
-    """Cache a scan result as the latest snapshot for an account (upsert)."""
-    row = {
-        "account_id": str(account_id),
-        "user_id": str(user_id),
-        "issues": result["issues"],
-        "email_count": result["email_count"],
-        "query": query,
-        "generated_at": result["generated_at"],
-    }
-    db.admin.table("email_issue_scans").upsert(
-        row, on_conflict="account_id"
-    ).execute()
-
-
-def get_latest_scan(account_id: UUID, user_id: UUID) -> Optional[dict]:
-    """Return the cached snapshot for an account, or None if never scanned."""
-    result = (
-        db.admin.table("email_issue_scans")
-        .select("issues, email_count, generated_at")
-        .eq("account_id", str(account_id))
-        .eq("user_id", str(user_id))
-        .maybe_single()
-        .execute()
-    )
-    if not result or not result.data:
-        return None
-    return result.data
