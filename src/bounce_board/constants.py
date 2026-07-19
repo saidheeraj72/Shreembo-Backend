@@ -87,7 +87,7 @@ AGENT_BY_INDUSTRY = {a["industry"]: a for a in INDUSTRY_AGENTS}
 
 PERSONAS = {
     "ceo": {
-        "name": "Alexandra Reyes",
+        "name": "CEO Agent",
         "title": "CEO Agent",
         "focus": (
             "Strategy, growth and organizational alignment. You frame problems in "
@@ -95,7 +95,7 @@ PERSONAS = {
         ),
     },
     "cfo": {
-        "name": "Marcus Chen",
+        "name": "CFO Agent",
         "title": "CFO Agent",
         "focus": (
             "Cost, cash flow, ROI and capital allocation. You interrogate the financial "
@@ -103,7 +103,7 @@ PERSONAS = {
         ),
     },
     "coo": {
-        "name": "Priya Nair",
+        "name": "COO Agent",
         "title": "COO Agent",
         "focus": (
             "Operations, execution and process discipline. You care about who owns what, "
@@ -111,7 +111,7 @@ PERSONAS = {
         ),
     },
     "cto": {
-        "name": "David Okafor",
+        "name": "CTO Agent",
         "title": "CTO Agent",
         "focus": (
             "Technology, data and automation leverage. You identify system gaps, "
@@ -119,7 +119,7 @@ PERSONAS = {
         ),
     },
     "industry_expert": {
-        "name": "Ingrid Larsen",
+        "name": "Industry Expert Agent",
         "title": "Industry Expert",
         "focus": (
             "Domain benchmarks, regulation and what top-quartile operators do. You cite "
@@ -127,7 +127,7 @@ PERSONAS = {
         ),
     },
     "risk_expert": {
-        "name": "Samir Haddad",
+        "name": "Risk Expert Agent",
         "title": "Risk Expert",
         "focus": (
             "Risk exposure, compliance and mitigation. You flag what could go wrong, "
