@@ -280,7 +280,7 @@ Return STRICT JSON:
     5 or 6 members. The FIRST must be a chair (CEO-type) who drives to a decision.
     Include a domain expert persona and a risk/compliance persona. Each:
     {"id": "short-kebab-slug e.g. cfo / clinical-quality-expert",
-     "name": "realistic full name",
+     "name": "role-based agent name, e.g. 'CFO Agent' or 'Clinical Quality Agent' — NEVER a human name",
      "title": "e.g. CFO Agent / Clinical Quality Expert",
      "focus": "2-3 sentences: their lens ON THIS PROBLEM — what they will push on, question and demand"}
   ],
@@ -472,7 +472,7 @@ def _frameworks_digest(frameworks: list[dict]) -> str:
 # Board discussion
 # ---------------------------------------------------------------------------
 
-_PERSONA_PROMPT = """You are {name}, {title}, on an AI executive "bounce board" reviewing a business problem.
+_PERSONA_PROMPT = """You are the {title} on an AI executive "bounce board" reviewing a business problem.
 Your lens: {focus}
 
 You are speaking in round {round} ("{topic}") of a {total_rounds}-round board discussion.
@@ -513,7 +513,6 @@ async def _discussion_message(
     usage: _Usage,
 ) -> dict:
     system = _PERSONA_PROMPT.format(
-        name=persona["name"],
         title=persona["title"],
         focus=persona["focus"],
         round=round_info["round"],
@@ -816,7 +815,7 @@ async def _generate_report(
 # Ask the board (post-analysis follow-up)
 # ---------------------------------------------------------------------------
 
-_FOLLOWUP_PROMPT = """You are {name}, {title}, on an AI executive "bounce board" that has just completed
+_FOLLOWUP_PROMPT = """You are the {title} on an AI executive "bounce board" that has just completed
 its analysis of a business problem. Your lens: {focus}
 
 The user now asks you a follow-up question. Answer it directly in 2-5 sentences,
@@ -850,7 +849,7 @@ async def ask_board(session_row: dict, question: str, persona_id: Optional[str])
     usage = _Usage()
     client = _client()
     system = _FOLLOWUP_PROMPT.format(
-        name=persona["name"], title=persona["title"], focus=persona["focus"]
+        title=persona["title"], focus=persona["focus"]
     )
     data = await _llm_json(
         client,
