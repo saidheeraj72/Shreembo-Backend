@@ -22,7 +22,7 @@ qdrant-client
 openai
 
 # Document Processing
-unstructured  # Best-in-class document parsing (PDF, DOCX, XLSX, PPTX, HTML, etc.)
+unstructured[pdf]  # Best-in-class document parsing (PDF, DOCX, XLSX, PPTX, HTML, etc.); [pdf] extra enables the primary PDF extractor (tables/layout)
 tiktoken  # Token counting for chunk sizing (OpenAI cl100k_base)
 pymupdf  # PDF text extraction (fallback)
 pymupdf4llm  # PDF to markdown conversion (fallback)
