@@ -101,31 +101,28 @@ CREATE INDEX idx_orgs_active ON public.organizations(is_active) WHERE is_active 
 
 COMMENT ON TABLE public.organizations IS 'Multi-tenant organizations with isolated data';
 
--- Branches (Departments/Locations)
+-- Units (Vessels)
+-- Table/API keep the "branches" name for contract stability; the domain is units.
 CREATE TABLE public.branches (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     org_id UUID NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
 
-    -- Branch Information
-    name TEXT NOT NULL,
-    code TEXT,
-    branch_type TEXT DEFAULT 'office',  -- office, warehouse, store, remote
+    -- Unit identity
+    name TEXT NOT NULL,          -- Unit Name
+    code TEXT,                   -- Unit Code
 
-    -- Location
-    address TEXT,
-    city TEXT,
-    state TEXT,
-    country TEXT DEFAULT 'US',
-    postal_code TEXT,
-    timezone TEXT DEFAULT 'UTC',
-
-    -- Contact
-    phone TEXT,
-    email TEXT,
+    -- Vessel details
+    unit_type TEXT,              -- 'Vessel' | 'Office'
+    flag TEXT,
+    imo_number TEXT,             -- 7-digit IMO number
+    mmsi TEXT,                   -- 9-digit MMSI
+    call_sign TEXT,
+    vessel_type TEXT,            -- e.g. Bulk Carrier, Oil Tanker
+    port_of_registry TEXT,
+    year_built TEXT,             -- 4-digit year
 
     -- Management
     manager_id UUID,  -- FK added later
-    parent_branch_id UUID REFERENCES public.branches(id) ON DELETE SET NULL,
 
     -- Status
     is_active BOOLEAN DEFAULT true,
@@ -133,16 +130,14 @@ CREATE TABLE public.branches (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
 
-    UNIQUE(org_id, code),
-    CONSTRAINT email_format CHECK (email IS NULL OR email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
+    UNIQUE(org_id, code)
 );
 
 CREATE INDEX idx_branches_org ON public.branches(org_id);
-CREATE INDEX idx_branches_parent ON public.branches(parent_branch_id);
 CREATE INDEX idx_branches_manager ON public.branches(manager_id);
 CREATE INDEX idx_branches_active ON public.branches(org_id, is_active);
 
-COMMENT ON TABLE public.branches IS 'Organization branches/departments/locations';
+COMMENT ON TABLE public.branches IS 'Organization units (vessels); API path /admin/branches';
 
 -- ==========================================
 -- USERS & AUTHENTICATION

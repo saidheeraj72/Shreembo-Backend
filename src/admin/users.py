@@ -118,7 +118,7 @@ class AdminUsersMixin:
 
         branches_response = (
             db.admin.table("user_branches")
-            .select("*, branches(id, name, code, branch_type)")
+            .select("*, branches(id, name, code, unit_type, vessel_type)")
             .eq("user_id", str(user_id))
             .execute()
         )

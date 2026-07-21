@@ -11,63 +11,51 @@ from src.models.common import UUIDModel, TimestampMixin
 
 
 # ==========================================
-# BRANCH MODELS
+# UNIT (VESSEL) MODELS
+# Stored in the `branches` table; the API path is /admin/branches.
 # ==========================================
 
-class BranchType(str, Enum):
-    """Branch type enum."""
-    HEADQUARTERS = "headquarters"
-    OFFICE = "office"
-    WAREHOUSE = "warehouse"
-    STORE = "store"
-    REMOTE = "remote"
-    DEPARTMENT = "department"
-
-
 class BranchBase(BaseModel):
-    """Base branch model."""
+    """Base unit (vessel) model."""
     name: str = Field(..., min_length=1, max_length=255)
     code: Optional[str] = Field(None, max_length=50)
-    branch_type: BranchType = BranchType.OFFICE
-    address: Optional[str] = None
-    city: Optional[str] = None
-    state: Optional[str] = None
-    country: str = "US"
-    postal_code: Optional[str] = None
-    timezone: str = "UTC"
-    phone: Optional[str] = None
-    email: Optional[EmailStr] = None
+    # Vessel fields
+    unit_type: Optional[str] = None          # "Vessel" | "Office"
+    flag: Optional[str] = None
+    imo_number: Optional[str] = None
+    mmsi: Optional[str] = None
+    call_sign: Optional[str] = None
+    vessel_type: Optional[str] = None
+    port_of_registry: Optional[str] = None
+    year_built: Optional[str] = None
 
 
 class BranchCreate(BranchBase):
-    """Branch creation model."""
+    """Unit creation model."""
     manager_id: Optional[UUID] = None
-    parent_branch_id: Optional[UUID] = None
 
 
 class BranchUpdate(BaseModel):
-    """Branch update model."""
+    """Unit update model."""
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     code: Optional[str] = Field(None, max_length=50)
-    branch_type: Optional[BranchType] = None
-    address: Optional[str] = None
-    city: Optional[str] = None
-    state: Optional[str] = None
-    country: Optional[str] = None
-    postal_code: Optional[str] = None
-    timezone: Optional[str] = None
-    phone: Optional[str] = None
-    email: Optional[EmailStr] = None
     manager_id: Optional[UUID] = None
-    parent_branch_id: Optional[UUID] = None
     is_active: Optional[bool] = None
+    # Vessel fields
+    unit_type: Optional[str] = None
+    flag: Optional[str] = None
+    imo_number: Optional[str] = None
+    mmsi: Optional[str] = None
+    call_sign: Optional[str] = None
+    vessel_type: Optional[str] = None
+    port_of_registry: Optional[str] = None
+    year_built: Optional[str] = None
 
 
 class Branch(UUIDModel, BranchBase, TimestampMixin):
-    """Branch response model."""
+    """Unit response model."""
     org_id: UUID
     manager_id: Optional[UUID] = None
-    parent_branch_id: Optional[UUID] = None
     is_active: bool = True
 
     class Config:
