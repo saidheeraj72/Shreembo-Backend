@@ -60,11 +60,22 @@ async def list_root_contents(
             node_type=NodeType.BRANCH,
             parent_id=None,
             branch_id=None,
-            description=None,
+            description=b.get("description"),
             owner_id=UUID(b["owner_id"]),
             created_at=b["created_at"],
             updated_at=b["updated_at"],
-            children_count=0
+            children_count=0,
+            code=b.get("code"),
+            unit_type=b.get("unit_type"),
+            vessel_type=b.get("vessel_type"),
+            flag=b.get("flag"),
+            port_of_registry=b.get("port_of_registry"),
+            home_port=b.get("home_port"),
+            imo_number=b.get("imo_number"),
+            mmsi=b.get("mmsi"),
+            call_sign=b.get("call_sign"),
+            year_built=b.get("year_built"),
+            is_active=b.get("is_active", True)
         ))
 
     return {

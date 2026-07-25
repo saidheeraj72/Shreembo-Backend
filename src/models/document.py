@@ -95,6 +95,19 @@ class FolderResponse(BaseModel):
     updated_at: datetime
     children_count: Optional[int] = 0
 
+    # Vessel / Unit fields for branch nodes
+    code: Optional[str] = None
+    unit_type: Optional[str] = None
+    vessel_type: Optional[str] = None
+    flag: Optional[str] = None
+    port_of_registry: Optional[str] = None
+    home_port: Optional[str] = None
+    imo_number: Optional[str] = None
+    mmsi: Optional[str] = None
+    call_sign: Optional[str] = None
+    year_built: Optional[str] = None
+    is_active: Optional[bool] = True
+
     class Config:
         from_attributes = True
 
