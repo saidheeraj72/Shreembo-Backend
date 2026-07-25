@@ -8,16 +8,30 @@ Fallback: BM25 keyword scoring + vector cosine Reciprocal Rank Fusion (pure Pyth
 import logging
 from typing import List, Dict
 
+from src.config import settings
+
 logger = logging.getLogger(__name__)
 
 try:
     from flashrank import Ranker, RerankRequest as _FlashRerankRequest
-    _ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2", cache_dir="/tmp/flashrank_cache")
+
+    # Persistent cache — /tmp is purged by macOS and on container restart, which
+    # leaves a half-populated model dir and silently disables neural reranking.
+    _ranker = Ranker(
+        model_name="ms-marco-MiniLM-L-12-v2",
+        cache_dir=settings.RERANKER_CACHE_DIR,
+    )
     RERANKER_AVAILABLE = True
     logger.info("FlashRank reranker loaded (ms-marco-MiniLM-L-12-v2)")
-except Exception:
+except ImportError:
     RERANKER_AVAILABLE = False
     logger.info("FlashRank not installed — using BM25+vector RRF reranking")
+except Exception as e:
+    RERANKER_AVAILABLE = False
+    logger.warning(
+        "FlashRank installed but failed to load (%s) — falling back to BM25+vector RRF. "
+        "Reranking quality will be degraded.", e
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +67,13 @@ def _deduplicate(chunks: List[Dict]) -> List[Dict]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def rerank(query: str, chunks: List[Dict], top_k: int, min_score: float = 0.0) -> List[Dict]:
+def rerank(
+    query: str,
+    chunks: List[Dict],
+    top_k: int,
+    min_score: float = 0.0,
+    rerank_min_score: float = 0.0,
+) -> List[Dict]:
     """
     Rerank and filter RAG chunks by relevance to *query*.
 
@@ -61,14 +81,23 @@ def rerank(query: str, chunks: List[Dict], top_k: int, min_score: float = 0.0) -
       1. Minimum cosine similarity threshold filter
       2. Deduplication (same doc + chunk_index)
       3. Neural reranking (FlashRank) OR BM25+vector RRF fusion
-      4. Return top_k results
+      4. Cross-encoder relevance floor
+      5. Return top_k results
+
+    Returning fewer than *top_k* — or nothing at all — is a valid outcome: it is
+    better to tell the user nothing relevant was found than to pad the context
+    with weak passages.
     """
     if not chunks:
         return []
 
-    # 1. Score threshold
+    # 1. Score threshold. Only meaningful for cosine scores — fused hybrid
+    #    results (RRF) live on a ~0.016–0.033 scale and would all be discarded.
     if min_score > 0:
-        chunks = [c for c in chunks if c.get("score", 0) >= min_score]
+        chunks = [
+            c for c in chunks
+            if c.get("score_type", "cosine") != "cosine" or c.get("score", 0) >= min_score
+        ]
 
     # 2. Deduplicate
     chunks = _deduplicate(chunks)
@@ -84,8 +113,23 @@ def rerank(query: str, chunks: List[Dict], top_k: int, min_score: float = 0.0) -
             passages = [{"id": i, "text": c.get("chunk_text", "")} for i, c in enumerate(chunks)]
             request = _FlashRerankRequest(query=query, passages=passages)
             results = _ranker.rerank(request)
-            reranked = [chunks[r["id"]] for r in results[:take]]
-            logger.debug("FlashRank: %d → %d chunks", len(chunks), len(reranked))
+
+            reranked: List[Dict] = []
+            dropped = 0
+            for r in results[:take]:
+                chunk = chunks[r["id"]]
+                score = float(r.get("score", 0.0))
+                chunk["rerank_score"] = score
+                # 4. Relevance floor on the cross-encoder score
+                if rerank_min_score > 0 and score < rerank_min_score:
+                    dropped += 1
+                    continue
+                reranked.append(chunk)
+
+            logger.debug(
+                "FlashRank: %d → %d chunks (%d below relevance floor)",
+                len(chunks), len(reranked), dropped,
+            )
             return reranked
         except Exception as e:
             logger.error("FlashRank failed, falling back to BM25+RRF: %s", e)

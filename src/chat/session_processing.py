@@ -48,7 +48,8 @@ class SessionDocumentProcessingMixin:
                 user_id=user_id,
                 upload_id=str(session_document_id),
                 is_session_document=True,
-                session_id=session_id
+                session_id=session_id,
+                document_name=filename,
             )
 
             # Only insert into session_documents after successful processing

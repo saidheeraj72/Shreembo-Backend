@@ -1,9 +1,11 @@
 """Embedding extraction and chunking helpers."""
+import asyncio
 import logging
 import os
 import re
 import tempfile
 from dataclasses import dataclass, field
+from html.parser import HTMLParser
 from typing import List, Optional, Dict
 
 import tiktoken
@@ -31,11 +33,95 @@ def _token_len(text: str) -> int:
 @dataclass
 class Chunk:
     """A text chunk with contextual metadata for high-quality RAG retrieval."""
-    text: str
+    text: str                       # clean text — stored and shown as the source
     chunk_index: int = 0
     page_numbers: List[int] = field(default_factory=list)
     section_header: str = ""        # e.g. "Section 3 > Subsection A"
     chunk_type: str = "text"        # text | table | code | list
+    embed_text: str = ""            # text sent to the embedding model (adds overlap)
+
+    @property
+    def text_to_embed(self) -> str:
+        return self.embed_text or self.text
+
+
+# ---------------------------------------------------------------------------
+# Page markers
+#
+# Extractors emit `<!-- page N -->` before each page's content so the chunker
+# can attach true page numbers. Formats without pages (docx, md, csv, html…)
+# emit no markers and their chunks carry no page numbers at all.
+# ---------------------------------------------------------------------------
+
+_PAGE_MARKER_RE = re.compile(r"<!--\s*page\s+(\d+)\s*-->")
+
+
+def _page_marker(page: int) -> str:
+    return f"<!-- page {page} -->"
+
+
+# ---------------------------------------------------------------------------
+# HTML table → markdown
+#
+# `unstructured` returns tables as HTML. Embedding tag soup wastes tokens and
+# dilutes the vector, so tables are normalised to markdown, which the chunker
+# can also split row-wise while repeating the header.
+# ---------------------------------------------------------------------------
+
+class _TableHTMLParser(HTMLParser):
+    """Collect <tr>/<td>/<th> cell text from an HTML table."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.rows: List[List[str]] = []
+        self._row: Optional[List[str]] = None
+        self._cell: Optional[List[str]] = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self._row = []
+        elif tag in ("td", "th"):
+            self._cell = []
+
+    def handle_endtag(self, tag):
+        if tag in ("td", "th") and self._cell is not None:
+            cell = " ".join("".join(self._cell).split()).replace("|", r"\|")
+            if self._row is None:
+                self._row = []
+            self._row.append(cell)
+            self._cell = None
+        elif tag == "tr" and self._row is not None:
+            self.rows.append(self._row)
+            self._row = None
+
+    def handle_data(self, data):
+        if self._cell is not None:
+            self._cell.append(data)
+
+
+def _html_table_to_markdown(html: str) -> Optional[str]:
+    """Convert an HTML table to a markdown table. Returns None if unparseable."""
+    try:
+        parser = _TableHTMLParser()
+        parser.feed(html)
+        parser.close()
+    except Exception as e:
+        logger.debug("HTML table parse failed: %s", e)
+        return None
+
+    rows = [r for r in parser.rows if any(c.strip() for c in r)]
+    if not rows:
+        return None
+
+    width = max(len(r) for r in rows)
+    rows = [r + [""] * (width - len(r)) for r in rows]
+
+    lines = [
+        "| " + " | ".join(rows[0]) + " |",
+        "| " + " | ".join(["---"] * width) + " |",
+    ]
+    lines.extend("| " + " | ".join(r) + " |" for r in rows[1:])
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -102,11 +188,10 @@ def _extract_with_unstructured(file_bytes: bytes, file_type: str) -> Optional[st
             meta = el.metadata
             page = getattr(meta, "page_number", None)
 
-            # Insert page separator when page changes
+            # Mark the true page number whenever the page changes
             if page and page != current_page:
-                if current_page > 0:
-                    parts.append("\n\n---\n\n")
                 current_page = page
+                parts.append(f"\n{_page_marker(page)}\n")
 
             category = el.category  # Title, NarrativeText, Table, ListItem, etc.
             text = str(el).strip()
@@ -119,12 +204,11 @@ def _extract_with_unstructured(file_bytes: bytes, file_type: str) -> Optional[st
                 prefix = "#" * min(depth + 1, 6)
                 parts.append(f"\n{prefix} {text}\n")
             elif category == "Table":
-                # unstructured returns tables as HTML; keep as-is for the chunker
+                # unstructured returns tables as HTML — normalise to markdown so
+                # the chunker can split them row-wise and keep the header
                 html_table = getattr(el.metadata, "text_as_html", None)
-                if html_table:
-                    parts.append(f"\n{html_table}\n")
-                else:
-                    parts.append(f"\n{text}\n")
+                md_table = _html_table_to_markdown(html_table) if html_table else None
+                parts.append(f"\n{md_table or text}\n")
             elif category == "ListItem":
                 parts.append(f"- {text}")
             elif category == "Header":
@@ -153,9 +237,19 @@ def _extract_pdf_with_pymupdf(file_bytes: bytes) -> Optional[str]:
         import pymupdf4llm
 
         doc = pymupdf.open(stream=file_bytes, filetype="pdf")
-        md_text = pymupdf4llm.to_markdown(doc, page_chunks=False)
+        pages = pymupdf4llm.to_markdown(doc, page_chunks=True)
         doc.close()
-        return md_text if md_text and md_text.strip() else None
+
+        parts: List[str] = []
+        for i, page in enumerate(pages, 1):
+            page_text = (page.get("text") or "").strip()
+            if not page_text:
+                continue
+            page_no = (page.get("metadata") or {}).get("page") or i
+            parts.append(f"{_page_marker(page_no)}\n{page_text}")
+
+        md_text = "\n\n".join(parts)
+        return md_text if md_text.strip() else None
     except Exception as e:
         logger.warning("PyMuPDF fallback failed: %s", e)
         return None
@@ -171,17 +265,17 @@ def _extract_pdf_with_ocr(file_bytes: bytes) -> Optional[str]:
         for page_num, page in enumerate(doc, 1):
             text = page.get_text("text")
             if text and text.strip():
-                pages_text.append(f"<!-- page {page_num} -->\n{text.strip()}")
+                pages_text.append(f"{_page_marker(page_num)}\n{text.strip()}")
             else:
                 try:
                     tp = page.get_textpage_ocr(language="eng", dpi=300)
                     ocr_text = page.get_text("text", textpage=tp)
                     if ocr_text and ocr_text.strip():
-                        pages_text.append(f"<!-- page {page_num} -->\n{ocr_text.strip()}")
+                        pages_text.append(f"{_page_marker(page_num)}\n{ocr_text.strip()}")
                 except Exception:
                     pass
         doc.close()
-        full_text = "\n\n---\n\n".join(pages_text)
+        full_text = "\n\n".join(pages_text)
         return full_text if full_text.strip() else None
     except Exception as e:
         logger.warning("OCR extraction failed: %s", e)
@@ -189,18 +283,41 @@ def _extract_pdf_with_ocr(file_bytes: bytes) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Page-number extraction from markdown page separators
+# Page-number extraction from `<!-- page N -->` markers
 # ---------------------------------------------------------------------------
 
 def _annotate_pages(text: str) -> List[Dict]:
-    """Split markdown text into per-page blocks with page numbers."""
-    blocks = re.split(r"\n-{3,}\n", text)
-    result = []
-    for i, block in enumerate(blocks):
-        stripped = block.strip()
-        if stripped:
-            result.append({"page": i + 1, "text": stripped})
-    return result if result else [{"page": 1, "text": text}]
+    """Split text into blocks carrying their true page number.
+
+    Blocks from documents without page markers (docx, md, csv, html…) get
+    ``page: None`` so no page number is ever attributed to them.
+    """
+    parts = _PAGE_MARKER_RE.split(text)
+
+    # No markers at all — one unpaginated block
+    if len(parts) == 1:
+        stripped = text.strip()
+        return [{"page": None, "text": stripped}] if stripped else []
+
+    blocks: List[Dict] = []
+
+    # Anything before the first marker has no known page
+    preamble = parts[0].strip()
+    if preamble:
+        blocks.append({"page": None, "text": preamble})
+
+    # parts is [preamble, page_no, body, page_no, body, ...]
+    for i in range(1, len(parts) - 1, 2):
+        body = parts[i + 1].strip()
+        if not body:
+            continue
+        try:
+            page = int(parts[i])
+        except (TypeError, ValueError):
+            page = None
+        blocks.append({"page": page, "text": body})
+
+    return blocks
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +353,9 @@ class _HeadingTracker:
 
 _TABLE_ROW_RE = re.compile(r"^\|.*\|$")
 _TABLE_SEP_RE = re.compile(r"^\|[\s:_-]+\|$")
+# Full markdown alignment row, e.g. "| --- | :---: |" — the loose _TABLE_SEP_RE
+# above only matches single-column separators.
+_TABLE_SEP_LINE_RE = re.compile(r"^\|(?:\s*:?-{2,}:?\s*\|)+$")
 _HTML_TABLE_RE = re.compile(r"<table[\s>]", re.IGNORECASE)
 
 
@@ -253,9 +373,10 @@ def _is_html_table_block(text: str) -> bool:
 # ---------------------------------------------------------------------------
 
 # Defaults tuned for text-embedding-3-small (8191 token limit)
-MAX_CHUNK_TOKENS = 512    # ~2000 chars — sweet spot for retrieval quality
-OVERLAP_TOKENS = 50       # ~200 chars
-MIN_CHUNK_TOKENS = 30     # ~100 chars
+MAX_CHUNK_TOKENS = 512          # ~2000 chars — sweet spot for retrieval quality
+TABLE_MAX_CHUNK_TOKENS = 900    # tables stay coherent with more rows per chunk
+OVERLAP_TOKENS = 50             # ~200 chars
+MIN_CHUNK_TOKENS = 20           # ~80 chars
 
 
 class SmartDocumentChunker:
@@ -274,26 +395,34 @@ class SmartDocumentChunker:
         max_chunk_tokens: int = MAX_CHUNK_TOKENS,
         overlap_tokens: int = OVERLAP_TOKENS,
         min_chunk_tokens: int = MIN_CHUNK_TOKENS,
+        table_max_chunk_tokens: int = TABLE_MAX_CHUNK_TOKENS,
     ):
         self.max_tokens = max_chunk_tokens
         self.overlap_tokens = overlap_tokens
         self.min_tokens = min_chunk_tokens
+        self.table_max_tokens = max(table_max_chunk_tokens, max_chunk_tokens)
+
+    def _limit_for(self, chunk_type: str) -> int:
+        return self.table_max_tokens if chunk_type == "table" else self.max_tokens
 
     def chunk_document(self, text: str) -> List[Chunk]:
         """Main entry: split full document text into Chunk objects."""
         page_blocks = _annotate_pages(text)
         raw_segments = self._segment_by_headings_and_tables(page_blocks)
         chunks = self._merge_segments(raw_segments)
-        chunks = self._add_overlap(chunks)
 
-        final = []
-        for c in chunks:
-            if _token_len(c.text) < self.min_tokens:
-                continue
-            final.append(c)
+        # Drop undersized chunks *before* overlap, so borderline junk can't be
+        # rescued by text borrowed from its neighbour. Tables are exempt: a
+        # two-row table is short but is often the whole answer.
+        final = [
+            c for c in chunks
+            if c.chunk_type == "table" or _token_len(c.text) >= self.min_tokens
+        ]
 
         for i, c in enumerate(final):
             c.chunk_index = i
+
+        self._add_overlap(final)
 
         return final
 
@@ -308,6 +437,8 @@ class SmartDocumentChunker:
         for pb in page_blocks:
             page_num = pb["page"]
             text = pb["text"]
+            # Unpaginated formats carry no page number at all
+            seg_pages: List[int] = [page_num] if page_num else []
 
             # Handle HTML tables from unstructured: split them out first
             if _is_html_table_block(text):
@@ -329,7 +460,7 @@ class SmartDocumentChunker:
                     if current_lines:
                         segments.append({
                             "text": "\n".join(current_lines).strip(),
-                            "pages": [page_num],
+                            "pages": list(seg_pages),
                             "section_header": tracker.current,
                             "chunk_type": current_type,
                         })
@@ -345,7 +476,7 @@ class SmartDocumentChunker:
                     if current_lines and current_type != "table":
                         segments.append({
                             "text": "\n".join(current_lines).strip(),
-                            "pages": [page_num],
+                            "pages": list(seg_pages),
                             "section_header": tracker.current,
                             "chunk_type": current_type,
                         })
@@ -362,7 +493,7 @@ class SmartDocumentChunker:
                     else:
                         segments.append({
                             "text": "\n".join(current_lines).strip(),
-                            "pages": [page_num],
+                            "pages": list(seg_pages),
                             "section_header": tracker.current,
                             "chunk_type": "table",
                         })
@@ -376,7 +507,7 @@ class SmartDocumentChunker:
             if current_lines:
                 segments.append({
                     "text": "\n".join(current_lines).strip(),
-                    "pages": [page_num],
+                    "pages": list(seg_pages),
                     "section_header": tracker.current,
                     "chunk_type": current_type,
                 })
@@ -384,9 +515,11 @@ class SmartDocumentChunker:
         return [s for s in segments if s["text"].strip()]
 
     def _split_html_tables(
-        self, text: str, page_num: int, tracker: _HeadingTracker, segments: List[Dict]
+        self, text: str, page_num: Optional[int], tracker: _HeadingTracker,
+        segments: List[Dict]
     ):
         """Split text containing HTML tables into table and non-table segments."""
+        seg_pages: List[int] = [page_num] if page_num else []
         # Split around <table>...</table> blocks
         parts = re.split(r"(<table[\s\S]*?</table>)", text, flags=re.IGNORECASE)
         for part in parts:
@@ -396,7 +529,7 @@ class SmartDocumentChunker:
             if re.match(r"<table", part, re.IGNORECASE):
                 segments.append({
                     "text": part,
-                    "pages": [page_num],
+                    "pages": list(seg_pages),
                     "section_header": tracker.current,
                     "chunk_type": "table",
                 })
@@ -407,7 +540,7 @@ class SmartDocumentChunker:
                         tracker.update(line)
                 segments.append({
                     "text": part,
-                    "pages": [page_num],
+                    "pages": list(seg_pages),
                     "section_header": tracker.current,
                     "chunk_type": "text",
                 })
@@ -450,9 +583,12 @@ class SmartDocumentChunker:
 
             combined = f"{current_text}\n\n{seg_text}" if current_text else seg_text
             if _token_len(combined) <= self.max_tokens:
+                # Label the chunk with the heading it *starts* under, not the
+                # last one it happens to run into.
+                if not current_text or not current_header:
+                    current_header = seg_header
                 current_text = combined
                 current_pages = list(set(current_pages + seg_pages))
-                current_header = seg_header or current_header
                 current_type = seg_type
             else:
                 if current_text.strip():
@@ -474,7 +610,9 @@ class SmartDocumentChunker:
     def _make_chunks(
         self, text: str, pages: List[int], header: str, chunk_type: str
     ) -> List[Chunk]:
-        if _token_len(text) <= self.max_tokens:
+        limit = self._limit_for(chunk_type)
+
+        if _token_len(text) <= limit:
             return [Chunk(
                 text=text.strip(),
                 page_numbers=sorted(set(pages)),
@@ -482,13 +620,20 @@ class SmartDocumentChunker:
                 chunk_type=chunk_type,
             )]
 
+        # An oversized table has no blank lines to split on, so the paragraph
+        # path below would hand it to the sentence splitter and cut mid-row.
+        if chunk_type == "table":
+            row_chunks = self._split_table_rows(text, pages, header)
+            if row_chunks:
+                return row_chunks
+
         paragraphs = text.split("\n\n")
         chunks: List[Chunk] = []
         current = ""
 
         for para in paragraphs:
             candidate = f"{current}\n\n{para}" if current else para
-            if _token_len(candidate) <= self.max_tokens:
+            if _token_len(candidate) <= limit:
                 current = candidate
             else:
                 if current.strip():
@@ -498,7 +643,7 @@ class SmartDocumentChunker:
                         section_header=header,
                         chunk_type=chunk_type,
                     ))
-                if _token_len(para) > self.max_tokens:
+                if _token_len(para) > limit:
                     chunks.extend(self._force_split(para, pages, header, chunk_type))
                     current = ""
                 else:
@@ -514,15 +659,73 @@ class SmartDocumentChunker:
 
         return chunks
 
+    def _split_table_rows(
+        self, text: str, pages: List[int], header: str
+    ) -> List[Chunk]:
+        """Split a markdown table into row windows, repeating the header row.
+
+        Returns [] when *text* has no detectable header row, so the caller can
+        fall back to generic splitting.
+        """
+        lines = [ln for ln in text.split("\n") if ln.strip()]
+        if not lines or not _TABLE_ROW_RE.match(lines[0].strip()):
+            return []
+
+        head_lines = [lines[0]]
+        body_start = 1
+        if len(lines) > 1 and (
+            _TABLE_SEP_LINE_RE.match(lines[1].strip())
+            or _TABLE_SEP_RE.match(lines[1].strip())
+        ):
+            head_lines.append(lines[1])
+            body_start = 2
+
+        body = lines[body_start:]
+        if not body:
+            return []
+
+        head_text = "\n".join(head_lines)
+        head_tokens = _token_len(head_text)
+        limit = self.table_max_tokens
+        page_numbers = sorted(set(pages))
+
+        def build(rows: List[str]) -> Chunk:
+            return Chunk(
+                text=f"{head_text}\n" + "\n".join(rows),
+                page_numbers=page_numbers,
+                section_header=header,
+                chunk_type="table",
+            )
+
+        chunks: List[Chunk] = []
+        current: List[str] = []
+        current_tokens = head_tokens
+
+        for row in body:
+            row_tokens = _token_len(row) + 1
+            if current and current_tokens + row_tokens > limit:
+                chunks.append(build(current))
+                current = []
+                current_tokens = head_tokens
+            current.append(row)
+            current_tokens += row_tokens
+
+        if current:
+            chunks.append(build(current))
+
+        logger.debug("Split oversized table into %d row windows", len(chunks))
+        return chunks
+
     def _force_split(
         self, text: str, pages: List[int], header: str, chunk_type: str
     ) -> List[Chunk]:
+        limit = self._limit_for(chunk_type)
         sentences = re.split(r'(?<=[.!?])\s+', text)
         chunks: List[Chunk] = []
         current = ""
         for sent in sentences:
             candidate = f"{current} {sent}" if current else sent
-            if _token_len(candidate) <= self.max_tokens:
+            if _token_len(candidate) <= limit:
                 current = candidate
             else:
                 if current.strip():
@@ -545,10 +748,16 @@ class SmartDocumentChunker:
     # ----- Phase 3: add overlap ------------------------------------------
 
     def _add_overlap(self, chunks: List[Chunk]) -> List[Chunk]:
-        if len(chunks) <= 1 or self.overlap_tokens <= 0:
-            return chunks
+        """Populate ``embed_text`` with boundary context from the previous chunk.
 
-        for i in range(1, len(chunks)):
+        ``text`` is left untouched: it is what gets stored, shown as the source
+        excerpt, and fed to the LLM, so it must not carry duplicated content.
+        """
+        for i, chunk in enumerate(chunks):
+            if i == 0 or self.overlap_tokens <= 0:
+                chunk.embed_text = chunk.text
+                continue
+
             prev_text = chunks[i - 1].text
             prev_tokens = _enc.encode(prev_text, disallowed_special=())
             if len(prev_tokens) <= self.overlap_tokens:
@@ -560,7 +769,7 @@ class SmartDocumentChunker:
                 if space_idx != -1:
                     overlap = overlap[space_idx + 1:]
 
-            chunks[i].text = f"[...] {overlap}\n\n{chunks[i].text}"
+            chunk.embed_text = f"{overlap}\n\n{chunk.text}"
 
         return chunks
 
@@ -574,6 +783,12 @@ class EmbeddingCoreMixin:
 
     @staticmethod
     async def extract_text(s3_key: str, file_type: str) -> Optional[str]:
+        """Extract document text.
+
+        Every extractor here is synchronous and CPU/IO-heavy (OCR on a scanned
+        PDF can run for minutes), so each runs in a worker thread — otherwise a
+        single upload stalls the whole event loop, including live chat sockets.
+        """
         content = await s3_client.get_file_content(s3_key)
         if not content:
             return None
@@ -582,35 +797,45 @@ class EmbeddingCoreMixin:
 
         if file_type == "pdf":
             # PDF: unstructured → pymupdf4llm → OCR
-            text = _extract_with_unstructured(content, file_type)
+            text = await asyncio.to_thread(_extract_with_unstructured, content, file_type)
             if text and text.strip():
                 logger.info("Extracted PDF with unstructured (%d chars) for %s", len(text), s3_key)
                 return sanitize_text(text)
 
             logger.info("unstructured returned empty, trying pymupdf4llm for %s", s3_key)
-            text = _extract_pdf_with_pymupdf(content)
+            text = await asyncio.to_thread(_extract_pdf_with_pymupdf, content)
             if not text:
                 logger.info("pymupdf4llm empty, trying OCR for %s", s3_key)
-                text = _extract_pdf_with_ocr(content)
+                text = await asyncio.to_thread(_extract_pdf_with_ocr, content)
         else:
             # Non-PDF: MarkItDown
-            text = _extract_with_markitdown(content, file_type)
+            text = await asyncio.to_thread(_extract_with_markitdown, content, file_type)
             if text and text.strip():
                 logger.info("Extracted with MarkItDown (%d chars) for %s", len(text), s3_key)
                 return sanitize_text(text)
 
             # Fallback to unstructured if MarkItDown fails
             logger.info("MarkItDown returned empty, trying unstructured for %s", s3_key)
-            text = _extract_with_unstructured(content, file_type)
+            text = await asyncio.to_thread(_extract_with_unstructured, content, file_type)
 
         return sanitize_text(text) if text else None
 
     @staticmethod
     def chunk_text(text: str) -> List[Chunk]:
-        """Chunk document text into enriched Chunk objects (token-aware)."""
+        """Chunk document text into enriched Chunk objects (token-aware).
+
+        Synchronous and token-heavy — call via :meth:`chunk_text_async` from
+        async code.
+        """
         chunker = SmartDocumentChunker(
             max_chunk_tokens=MAX_CHUNK_TOKENS,
             overlap_tokens=OVERLAP_TOKENS,
             min_chunk_tokens=MIN_CHUNK_TOKENS,
+            table_max_chunk_tokens=TABLE_MAX_CHUNK_TOKENS,
         )
         return chunker.chunk_document(text)
+
+    @staticmethod
+    async def chunk_text_async(text: str) -> List[Chunk]:
+        """Chunk in a worker thread — tokenizing a large document is not cheap."""
+        return await asyncio.to_thread(EmbeddingCoreMixin.chunk_text, text)

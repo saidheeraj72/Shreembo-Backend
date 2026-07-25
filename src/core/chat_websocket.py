@@ -329,6 +329,11 @@ class ChatConnectionManager:
                     sources = chunk.get("sources", [])
                     prompt_tokens = chunk.get("prompt_tokens", 0)
                     completion_tokens = chunk.get("completion_tokens", 0)
+                    # The final text is post-processed (invalid citation markers
+                    # removed, truncation noted), so prefer it over the raw
+                    # concatenation of streamed deltas.
+                    if chunk.get("content"):
+                        full_response = chunk["content"]
 
                 elif chunk["type"] == "error":
                     await websocket.send_json({

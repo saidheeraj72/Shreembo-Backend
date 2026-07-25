@@ -64,7 +64,9 @@ class DocumentUploadsMixin:
                     s3_key=s3_key,
                     file_type=ext,
                     user_id=str(owner_id),
-                    upload_id=upload_id
+                    upload_id=upload_id,
+                    document_name=filename,
+                    folder_id=str(parent_id) if parent_id else None,
                 )
             )
 
