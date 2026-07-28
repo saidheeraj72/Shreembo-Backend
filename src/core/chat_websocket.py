@@ -308,6 +308,15 @@ class ChatConnectionManager:
                         "data": web_results
                     })
 
+                elif chunk["type"] == "verifying":
+                    # The answer has finished streaming and is being checked
+                    # against its sources; stream_end may replace its content.
+                    await websocket.send_json({
+                        "type": "verifying",
+                        "session_id": str(session_id),
+                        "message_id": str(response_message_id),
+                    })
+
                 elif chunk["type"] == "reasoning":
                     await websocket.send_json({
                         "type": "stream_reasoning",

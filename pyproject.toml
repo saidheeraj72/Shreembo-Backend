@@ -19,14 +19,20 @@ dependencies = [
     "botocore",
     "qdrant-client",
     "openai",
-    "markitdown",
-    "markitdown[pdf]",
+    # Non-PDF extraction. The extras are not optional: without them
+    # docx/pptx/xlsx fail to convert. No [pdf] extra — PDFs go through
+    # pymupdf4llm, not markitdown.
+    "markitdown[docx,pptx,xlsx,xls,outlook]",
     "websockets",
     "aiofiles",
     "python-magic",
     "resend",
+    # PDF extraction, chunk sizing and reranking
     "pymupdf",
     "pymupdf4llm",
+    "pymupdf-layout",
+    "tiktoken",
+    "flashrank",
     "fpdf2",
     "python-docx",
 ]

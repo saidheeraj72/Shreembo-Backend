@@ -1,5 +1,6 @@
 """Auto-split RAG service part."""
 from collections import OrderedDict
+from itertools import zip_longest
 from typing import Optional, List, Dict, Any, AsyncGenerator
 from uuid import UUID
 import logging
@@ -342,9 +343,18 @@ class RAGRetrievalMixin:
                         'source': 'session',
                     })
 
-        # Combine and sort by score
-        all_filtered_results = main_filtered_results + session_filtered_results
-        all_filtered_results.sort(key=lambda x: x['score'], reverse=True)
+        # Combine by interleaving rank, not by sorting on score. The two lists
+        # come from separate searches over separate collections, and a hybrid
+        # (RRF-fused) score lives on a ~0.016–0.033 scale while a dense-only
+        # cosine runs 0–1 — sorting them together lets the scale, not the
+        # relevance, decide what survives the top_k cut. Rank is comparable;
+        # the cross-encoder rerank downstream assigns the real ordering.
+        all_filtered_results: List[dict] = []
+        for main_hit, session_hit in zip_longest(main_filtered_results, session_filtered_results):
+            if main_hit is not None:
+                all_filtered_results.append(main_hit)
+            if session_hit is not None:
+                all_filtered_results.append(session_hit)
 
         # Take top K
         final_results = all_filtered_results[:top_k]

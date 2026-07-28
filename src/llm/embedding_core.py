@@ -60,12 +60,23 @@ def _page_marker(page: int) -> str:
     return f"<!-- page {page} -->"
 
 
+# markitdown annotates pptx slides as `<!-- Slide number: 3 -->`. A slide is the
+# pptx equivalent of a page and is what a citation should point at, so it is
+# rewritten into the marker the chunker understands.
+_SLIDE_MARKER_RE = re.compile(r"<!--\s*Slide number:\s*(\d+)\s*-->", re.IGNORECASE)
+
+
+def _normalize_page_markers(text: str) -> str:
+    return _SLIDE_MARKER_RE.sub(lambda m: _page_marker(int(m.group(1))), text)
+
+
 # ---------------------------------------------------------------------------
 # HTML table → markdown
 #
-# `unstructured` returns tables as HTML. Embedding tag soup wastes tokens and
-# dilutes the vector, so tables are normalised to markdown, which the chunker
-# can also split row-wise while repeating the header.
+# markitdown runs docx/html through markdownify, which passes tables through as
+# HTML. Embedding tag soup wastes tokens and dilutes the vector, so tables are
+# normalised to markdown, which the chunker can also split row-wise while
+# repeating the header.
 # ---------------------------------------------------------------------------
 
 class _TableHTMLParser(HTMLParser):
@@ -125,11 +136,17 @@ def _html_table_to_markdown(html: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Extraction via `markitdown` (non-PDF formats)
+# Extraction via `markitdown` — every non-PDF format
+#
+# markitdown's format support is extras-gated: docx needs mammoth, pptx needs
+# python-pptx, xlsx needs openpyxl+pandas. requirements.txt pins
+# markitdown[docx,pptx,xlsx,xls,outlook]; without those extras these formats
+# raise here and the document indexes as failed rather than silently empty.
 # ---------------------------------------------------------------------------
 
 def _extract_with_markitdown(file_bytes: bytes, file_type: str) -> Optional[str]:
     """Extract text from non-PDF documents using MarkItDown."""
+    tmp_path: Optional[str] = None
     try:
         from markitdown import MarkItDown
 
@@ -137,149 +154,119 @@ def _extract_with_markitdown(file_bytes: bytes, file_type: str) -> Optional[str]
             tmp.write(file_bytes)
             tmp_path = tmp.name
 
-        try:
-            md = MarkItDown()
-            result = md.convert(tmp_path)
-            text = result.text_content
-        finally:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+        md = MarkItDown()
+        result = md.convert(tmp_path)
+        text = result.text_content
 
-        return text if text and text.strip() else None
+        return _normalize_page_markers(text) if text and text.strip() else None
 
     except Exception as e:
-        logger.warning("MarkItDown extraction failed: %s", e)
+        logger.warning("MarkItDown extraction failed for .%s: %s", file_type, e)
         return None
+    finally:
+        # In the original the unlink lived in an inner `finally` that was never
+        # reached when NamedTemporaryFile itself raised, leaking the file.
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 # ---------------------------------------------------------------------------
-# Extraction via `unstructured` (PDFs)
+# Extraction via `pymupdf4llm` — PDFs
+#
+# Chosen over `unstructured`'s hi_res path: native C, no layout model to
+# download at runtime (a cold-start trap in a container with no persistent
+# volume), and 10–50x faster. It emits markdown with headings inferred from
+# font size and tables via PyMuPDF's table finder, which is exactly what the
+# chunker downstream expects.
+#
+# Pages that come back near-empty are scanned images, so they are OCR'd
+# individually. Testing yield *per page* rather than per document matters: a
+# stray text layer over a scanned deck otherwise passes as extracted.
 # ---------------------------------------------------------------------------
 
-def _extract_with_unstructured(file_bytes: bytes, file_type: str) -> Optional[str]:
-    """Extract structured text from any document using the `unstructured` library.
+# Below this many characters a page is treated as unextracted and sent to OCR.
+_MIN_CHARS_PER_PAGE = 100
 
-    Returns markdown-formatted text with page annotations and table preservation.
-    """
+try:
+    # The pymupdf-layout distribution installs into the pymupdf namespace as
+    # pymupdf.layout. pymupdf4llm picks it up automatically; importing it here
+    # makes the dependency explicit and its absence loggable. Its ONNX layout
+    # models ship inside the wheel, so there is no download on first use.
+    import pymupdf.layout  # noqa: F401
+    _LAYOUT_AVAILABLE = True
+except ImportError:
+    _LAYOUT_AVAILABLE = False
+    logger.warning(
+        "pymupdf-layout not installed — multi-column PDFs may extract out of "
+        "reading order. Install it to improve layout analysis."
+    )
+
+
+def _ocr_page(page) -> str:
+    """OCR a single page. Returns '' when tesseract is unavailable or finds nothing."""
     try:
-        from unstructured.partition.auto import partition
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_type}") as tmp:
-            tmp.write(file_bytes)
-            tmp_path = tmp.name
-
-        try:
-            elements = partition(
-                filename=tmp_path,
-                strategy="auto",          # fast for text PDFs, OCR for scanned
-                include_page_breaks=True,
-            )
-        finally:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-
-        if not elements:
-            return None
-
-        parts: List[str] = []
-        current_page = 0
-
-        for el in elements:
-            meta = el.metadata
-            page = getattr(meta, "page_number", None)
-
-            # Mark the true page number whenever the page changes
-            if page and page != current_page:
-                current_page = page
-                parts.append(f"\n{_page_marker(page)}\n")
-
-            category = el.category  # Title, NarrativeText, Table, ListItem, etc.
-            text = str(el).strip()
-            if not text:
-                continue
-
-            if category == "Title":
-                # Estimate heading level from font size / nesting (default ##)
-                depth = getattr(meta, "category_depth", None) or 1
-                prefix = "#" * min(depth + 1, 6)
-                parts.append(f"\n{prefix} {text}\n")
-            elif category == "Table":
-                # unstructured returns tables as HTML — normalise to markdown so
-                # the chunker can split them row-wise and keep the header
-                html_table = getattr(el.metadata, "text_as_html", None)
-                md_table = _html_table_to_markdown(html_table) if html_table else None
-                parts.append(f"\n{md_table or text}\n")
-            elif category == "ListItem":
-                parts.append(f"- {text}")
-            elif category == "Header":
-                parts.append(f"\n## {text}\n")
-            elif category == "Footer" or category == "PageNumber":
-                continue  # skip noise
-            else:
-                parts.append(text)
-
-        result = "\n".join(parts).strip()
-        return result if result else None
-
+        tp = page.get_textpage_ocr(language="eng", dpi=300, full=True)
+        return (page.get_text("text", textpage=tp) or "").strip()
     except Exception as e:
-        logger.warning("unstructured extraction failed: %s", e)
-        return None
+        # Most often the tesseract binary is missing from the image
+        logger.debug("OCR failed on page: %s", e)
+        return ""
 
 
-# ---------------------------------------------------------------------------
-# Fallback extractors
-# ---------------------------------------------------------------------------
-
-def _extract_pdf_with_pymupdf(file_bytes: bytes) -> Optional[str]:
-    """Fallback PDF extractor using pymupdf4llm."""
+def _extract_pdf(file_bytes: bytes) -> Optional[str]:
+    """Extract a PDF to page-marked markdown, OCR'ing pages that need it."""
     try:
         import pymupdf
         import pymupdf4llm
+    except ImportError as e:
+        logger.error("PDF extraction unavailable — pymupdf4llm missing: %s", e)
+        return None
 
+    doc = None
+    try:
         doc = pymupdf.open(stream=file_bytes, filetype="pdf")
-        pages = pymupdf4llm.to_markdown(doc, page_chunks=True)
-        doc.close()
+        try:
+            pages = pymupdf4llm.to_markdown(doc, page_chunks=True)
+        except Exception as e:
+            # Malformed PDFs can break the markdown writer while the raw text
+            # layer is still readable — fall back to it rather than losing the
+            # document entirely.
+            logger.warning("pymupdf4llm markdown conversion failed (%s) — using raw text", e)
+            pages = [
+                {"text": p.get_text("text"), "metadata": {"page": i}}
+                for i, p in enumerate(doc, 1)
+            ]
 
         parts: List[str] = []
+        ocr_pages = 0
+
         for i, page in enumerate(pages, 1):
             page_text = (page.get("text") or "").strip()
+            page_no = (page.get("metadata") or {}).get("page") or i
+
+            if len(page_text) < _MIN_CHARS_PER_PAGE and 0 < page_no <= doc.page_count:
+                ocr_text = _ocr_page(doc[page_no - 1])
+                # Keep whichever read more — OCR on a genuinely sparse page
+                # (a section divider, a full-page figure) can return noise.
+                if len(ocr_text) > len(page_text):
+                    page_text = ocr_text
+                    ocr_pages += 1
+
             if not page_text:
                 continue
-            page_no = (page.get("metadata") or {}).get("page") or i
             parts.append(f"{_page_marker(page_no)}\n{page_text}")
+
+        if ocr_pages:
+            logger.info("OCR'd %d/%d PDF pages with no usable text layer", ocr_pages, len(pages))
 
         md_text = "\n\n".join(parts)
         return md_text if md_text.strip() else None
     except Exception as e:
-        logger.warning("PyMuPDF fallback failed: %s", e)
+        logger.warning("PDF extraction failed: %s", e)
         return None
-
-
-def _extract_pdf_with_ocr(file_bytes: bytes) -> Optional[str]:
-    """Last-resort: plain text extraction + OCR for scanned PDFs."""
-    try:
-        import pymupdf
-
-        doc = pymupdf.open(stream=file_bytes, filetype="pdf")
-        pages_text = []
-        for page_num, page in enumerate(doc, 1):
-            text = page.get_text("text")
-            if text and text.strip():
-                pages_text.append(f"{_page_marker(page_num)}\n{text.strip()}")
-            else:
-                try:
-                    tp = page.get_textpage_ocr(language="eng", dpi=300)
-                    ocr_text = page.get_text("text", textpage=tp)
-                    if ocr_text and ocr_text.strip():
-                        pages_text.append(f"{_page_marker(page_num)}\n{ocr_text.strip()}")
-                except Exception:
-                    pass
-        doc.close()
-        full_text = "\n\n".join(pages_text)
-        return full_text if full_text.strip() else None
-    except Exception as e:
-        logger.warning("OCR extraction failed: %s", e)
-        return None
+    finally:
+        if doc is not None:
+            doc.close()
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +338,7 @@ class _HeadingTracker:
 # Table / HTML table detection
 # ---------------------------------------------------------------------------
 
+_CODE_FENCE_RE = re.compile(r"^(?:```|~~~)")
 _TABLE_ROW_RE = re.compile(r"^\|.*\|$")
 _TABLE_SEP_RE = re.compile(r"^\|[\s:_-]+\|$")
 # Full markdown alignment row, e.g. "| --- | :---: |" — the loose _TABLE_SEP_RE
@@ -366,6 +354,53 @@ def _is_table_line(line: str) -> bool:
 
 def _is_html_table_block(text: str) -> bool:
     return bool(_HTML_TABLE_RE.search(text))
+
+
+# ---------------------------------------------------------------------------
+# Repeated running headers / footers
+# ---------------------------------------------------------------------------
+
+def _strip_repeated_lines(page_blocks: List[Dict], min_pages: int = 4) -> List[Dict]:
+    """Drop lines that repeat on most pages — running headers, footers, stamps.
+
+    PyMuPDF keeps them on every page, so without this each chunk carries a copy
+    of "ACME Corp — Confidential" and the noise dilutes both the embedding and
+    the excerpt the user is shown.
+
+    Only applied to documents with real page structure and enough pages for a
+    repeat to be evidence rather than coincidence.
+    """
+    paged = [b for b in page_blocks if b["page"] is not None]
+    if len(paged) < min_pages:
+        return page_blocks
+
+    counts: Dict[str, int] = {}
+    for block in paged:
+        # Headers/footers sit at the page edges; a line repeated in the body is
+        # more likely to be real content (a table row, a bullet).
+        lines = [ln.strip() for ln in block["text"].split("\n") if ln.strip()]
+        for line in set(lines[:3] + lines[-3:]):
+            counts[line] = counts.get(line, 0) + 1
+
+    threshold = max(min_pages - 1, int(len(paged) * 0.6))
+    boilerplate = {
+        line for line, n in counts.items()
+        # Long lines are prose that happens to repeat, not a running header
+        if n >= threshold and len(line) <= 120
+    }
+    if not boilerplate:
+        return page_blocks
+
+    logger.debug("Stripping %d repeated header/footer lines", len(boilerplate))
+
+    cleaned: List[Dict] = []
+    for block in page_blocks:
+        text = "\n".join(
+            ln for ln in block["text"].split("\n") if ln.strip() not in boilerplate
+        ).strip()
+        if text:
+            cleaned.append({**block, "text": text})
+    return cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -385,7 +420,8 @@ class SmartDocumentChunker:
     - Token-aware sizing (tiktoken cl100k_base)
     - Heading-aware splitting with breadcrumb context
     - Table preservation (never splits inside a table)
-    - HTML table support (from unstructured)
+    - HTML table support (from markitdown's markdownify output)
+    - Fenced code blocks kept atomic
     - Chunk overlap for boundary context
     - Page number tracking
     """
@@ -407,16 +443,17 @@ class SmartDocumentChunker:
 
     def chunk_document(self, text: str) -> List[Chunk]:
         """Main entry: split full document text into Chunk objects."""
-        page_blocks = _annotate_pages(text)
+        page_blocks = _strip_repeated_lines(_annotate_pages(text))
         raw_segments = self._segment_by_headings_and_tables(page_blocks)
         chunks = self._merge_segments(raw_segments)
 
         # Drop undersized chunks *before* overlap, so borderline junk can't be
-        # rescued by text borrowed from its neighbour. Tables are exempt: a
-        # two-row table is short but is often the whole answer.
+        # rescued by text borrowed from its neighbour. Tables and code are
+        # exempt: a two-row table or a four-line snippet is short but is often
+        # the whole answer.
         final = [
             c for c in chunks
-            if c.chunk_type == "table" or _token_len(c.text) >= self.min_tokens
+            if c.chunk_type in ("table", "code") or _token_len(c.text) >= self.min_tokens
         ]
 
         for i, c in enumerate(final):
@@ -440,7 +477,8 @@ class SmartDocumentChunker:
             # Unpaginated formats carry no page number at all
             seg_pages: List[int] = [page_num] if page_num else []
 
-            # Handle HTML tables from unstructured: split them out first
+            # Handle HTML tables (markitdown routes docx/html through
+            # markdownify, which emits tables as HTML): split them out first
             if _is_html_table_block(text):
                 self._split_html_tables(text, page_num, tracker, segments)
                 continue
@@ -449,8 +487,40 @@ class SmartDocumentChunker:
             current_lines: List[str] = []
             current_type = "text"
             in_table = False
+            in_code = False
+
+            def flush(chunk_type: str):
+                if current_lines:
+                    segments.append({
+                        "text": "\n".join(current_lines).strip(),
+                        "pages": list(seg_pages),
+                        "section_header": tracker.current,
+                        "chunk_type": chunk_type,
+                    })
 
             for line in lines:
+                # Fenced code is atomic: everything inside it — '#' comments,
+                # '|' pipes in a shell command — must not be read as markdown,
+                # and the sentence splitter must never cut through it.
+                if _CODE_FENCE_RE.match(line.strip()):
+                    if in_code:
+                        current_lines.append(line)
+                        flush("code")
+                        current_lines = []
+                        current_type = "text"
+                        in_code = False
+                    else:
+                        flush(current_type)
+                        current_lines = [line]
+                        current_type = "code"
+                        in_code = True
+                        in_table = False
+                    continue
+
+                if in_code:
+                    current_lines.append(line)
+                    continue
+
                 is_heading = line.strip().startswith("#") and re.match(
                     r"^#{1,6}\s+", line.strip()
                 )
@@ -527,8 +597,10 @@ class SmartDocumentChunker:
             if not part:
                 continue
             if re.match(r"<table", part, re.IGNORECASE):
+                # Normalise to markdown so the row-window splitter can handle an
+                # oversized table, and so the stored chunk is not raw tag soup.
                 segments.append({
-                    "text": part,
+                    "text": _html_table_to_markdown(part) or part,
                     "pages": list(seg_pages),
                     "section_header": tracker.current,
                     "chunk_type": "table",
@@ -720,11 +792,18 @@ class SmartDocumentChunker:
         self, text: str, pages: List[int], header: str, chunk_type: str
     ) -> List[Chunk]:
         limit = self._limit_for(chunk_type)
-        sentences = re.split(r'(?<=[.!?])\s+', text)
+        # Code has no sentences — splitting it on '.' cuts through method chains
+        # and file paths. Break on line boundaries instead.
+        if chunk_type == "code":
+            pieces = text.split("\n")
+            joiner = "\n"
+        else:
+            pieces = re.split(r'(?<=[.!?])\s+', text)
+            joiner = " "
         chunks: List[Chunk] = []
         current = ""
-        for sent in sentences:
-            candidate = f"{current} {sent}" if current else sent
+        for sent in pieces:
+            candidate = f"{current}{joiner}{sent}" if current else sent
             if _token_len(candidate) <= limit:
                 current = candidate
             else:
@@ -758,7 +837,19 @@ class SmartDocumentChunker:
                 chunk.embed_text = chunk.text
                 continue
 
-            prev_text = chunks[i - 1].text
+            prev = chunks[i - 1]
+            # Overlap only carries context when the neighbour is actually
+            # continuous prose. Borrowing the tail of a different section, or of
+            # a table or code block, injects unrelated tokens into the vector.
+            if (
+                prev.section_header != chunk.section_header
+                or prev.chunk_type != "text"
+                or chunk.chunk_type != "text"
+            ):
+                chunk.embed_text = chunk.text
+                continue
+
+            prev_text = prev.text
             prev_tokens = _enc.encode(prev_text, disallowed_special=())
             if len(prev_tokens) <= self.overlap_tokens:
                 overlap = prev_text
@@ -785,40 +876,31 @@ class EmbeddingCoreMixin:
     async def extract_text(s3_key: str, file_type: str) -> Optional[str]:
         """Extract document text.
 
-        Every extractor here is synchronous and CPU/IO-heavy (OCR on a scanned
-        PDF can run for minutes), so each runs in a worker thread — otherwise a
-        single upload stalls the whole event loop, including live chat sockets.
+        One extractor per format family, no fallback chain between them:
+          PDF     → pymupdf4llm, with per-page OCR where the text layer is empty
+          non-PDF → markitdown
+
+        Both are synchronous and CPU/IO-heavy (OCR on a scanned PDF can run for
+        minutes), so they run in a worker thread — otherwise a single upload
+        stalls the whole event loop, including live chat sockets.
         """
         content = await s3_client.get_file_content(s3_key)
         if not content:
             return None
 
-        text = None
-
         if file_type == "pdf":
-            # PDF: unstructured → pymupdf4llm → OCR
-            text = await asyncio.to_thread(_extract_with_unstructured, content, file_type)
-            if text and text.strip():
-                logger.info("Extracted PDF with unstructured (%d chars) for %s", len(text), s3_key)
-                return sanitize_text(text)
-
-            logger.info("unstructured returned empty, trying pymupdf4llm for %s", s3_key)
-            text = await asyncio.to_thread(_extract_pdf_with_pymupdf, content)
-            if not text:
-                logger.info("pymupdf4llm empty, trying OCR for %s", s3_key)
-                text = await asyncio.to_thread(_extract_pdf_with_ocr, content)
+            text = await asyncio.to_thread(_extract_pdf, content)
+            extractor = "pymupdf4llm"
         else:
-            # Non-PDF: MarkItDown
             text = await asyncio.to_thread(_extract_with_markitdown, content, file_type)
-            if text and text.strip():
-                logger.info("Extracted with MarkItDown (%d chars) for %s", len(text), s3_key)
-                return sanitize_text(text)
+            extractor = "markitdown"
 
-            # Fallback to unstructured if MarkItDown fails
-            logger.info("MarkItDown returned empty, trying unstructured for %s", s3_key)
-            text = await asyncio.to_thread(_extract_with_unstructured, content, file_type)
+        if not text or not text.strip():
+            logger.warning("%s extracted nothing from %s (.%s)", extractor, s3_key, file_type)
+            return None
 
-        return sanitize_text(text) if text else None
+        logger.info("Extracted %s with %s (%d chars)", s3_key, extractor, len(text))
+        return sanitize_text(text)
 
     @staticmethod
     def chunk_text(text: str) -> List[Chunk]:

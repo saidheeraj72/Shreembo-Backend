@@ -135,6 +135,16 @@ class Settings(BaseSettings):
     RAG_NEIGHBOR_EXPANSION: int = 3           # top hits to widen with adjacent chunks
     RAG_MAX_TOOL_ROUNDS: int = 2              # tool-calling rounds before answering
     RERANKER_CACHE_DIR: str = "./.model_cache/flashrank"
+
+    # Answer judge — runs after the answer streams, before it is persisted.
+    # Checks every claim against the retrieved sources, drops sources the answer
+    # does not actually rest on, and returns a corrected answer. Fails open:
+    # any error or timeout keeps the original answer and the full source list.
+    RAG_JUDGE_ENABLED: bool = False           # opt-in until measured on real traffic
+    RAG_JUDGE_MODEL: Optional[str] = None     # defaults to OPENAI_CHAT_MODEL
+    RAG_JUDGE_TIMEOUT: float = 12.0           # seconds before keeping the draft
+    RAG_JUDGE_MIN_ANSWER_CHARS: int = 200     # skip short answers — nothing to check
+    RAG_JUDGE_MAX_GROWTH: float = 1.5         # revision longer than this ⇒ keep draft
     RAG_SYSTEM_PROMPT: str = """You are a helpful AI assistant for an enterprise document management system.
 
 When answering questions based on the provided context, you must:

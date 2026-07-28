@@ -83,43 +83,27 @@ def start_job(
     return job_id
 
 
-# An extraction shorter than this is treated as suspect (e.g. pymupdf4llm
-# keeping only a PDF's headers/footers) and the next extractor is tried too;
-# the longest result wins.
-_MIN_SUBSTANTIAL_CHARS = 1_000
-
-
 def _extract_bytes(file_bytes: bytes, file_type: str) -> Optional[str]:
-    """Extract text from raw bytes using the Documents module's extractor stack."""
-    from src.llm.embedding_core import (
-        _extract_pdf_with_ocr,
-        _extract_pdf_with_pymupdf,
-        _extract_with_markitdown,
-        _extract_with_unstructured,
-    )
+    """Extract text from raw bytes using the Documents module's extractor.
+
+    One extractor per format family — PDFs go through pymupdf4llm (which OCRs
+    its own empty pages), everything else through markitdown. The previous
+    try-each-and-keep-the-longest loop existed to work around extractors that
+    returned partial text; both of these either extract the document or return
+    nothing, so the longest-wins comparison had nothing left to choose between.
+    """
+    from src.llm.embedding_core import _extract_pdf, _extract_with_markitdown
     from src.utils.text_utils import sanitize_text
 
     if file_type == "pdf":
-        extractors = [
-            ("unstructured", lambda: _extract_with_unstructured(file_bytes, file_type)),
-            ("pymupdf4llm", lambda: _extract_pdf_with_pymupdf(file_bytes)),
-            ("pymupdf+ocr", lambda: _extract_pdf_with_ocr(file_bytes)),
-        ]
+        text = (_extract_pdf(file_bytes) or "").strip()
+        extractor = "pymupdf4llm"
     else:
-        extractors = [
-            ("markitdown", lambda: _extract_with_markitdown(file_bytes, file_type)),
-            ("unstructured", lambda: _extract_with_unstructured(file_bytes, file_type)),
-        ]
+        text = (_extract_with_markitdown(file_bytes, file_type) or "").strip()
+        extractor = "markitdown"
 
-    best = ""
-    for name, extract in extractors:
-        text = (extract() or "").strip()
-        logger.info("[BB-INGEST]   extractor %-12s -> %d chars", name, len(text))
-        if len(text) > len(best):
-            best = text
-        if len(best) >= _MIN_SUBSTANTIAL_CHARS:
-            break
-    return sanitize_text(best) if best else None
+    logger.info("[BB-INGEST]   extractor %-12s -> %d chars", extractor, len(text))
+    return sanitize_text(text) if text else None
 
 
 _ISSUE_MINING_PROMPT = """You analyze a business document and extract the distinct ISSUES it contains.

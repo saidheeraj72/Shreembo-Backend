@@ -11,7 +11,6 @@ import json
 import logging
 import math
 import operator
-import re
 
 from src.core.openai_client import openai_client
 from src.core.database import db
@@ -20,6 +19,8 @@ from src.llm.web_search import web_search_service
 from src.chat.service import chat_service
 from src.llm.token_usage import token_usage_service
 from src.llm import reranker
+from src.llm.citations import strip_invalid_citations
+from src.llm.judge import judge_answer
 from src.config import settings
 
 logger = logging.getLogger(__name__)
@@ -30,39 +31,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _ctx_enc = None
-
-
-# A citation marker, but not a markdown link label like [1](https://…)
-_CITATION_RE = re.compile(r"\[(\d{1,3})\](?!\()")
-# Fenced blocks and inline code are left completely alone — `arr[10]` is code,
-# not a citation.
-_CODE_SEGMENT_RE = re.compile(r"(```[\s\S]*?```|`[^`\n]*`)")
-
-
-def _strip_invalid_citations(text: str, valid_count: int) -> str:
-    """Remove citation markers that point at sources which do not exist.
-
-    Models occasionally emit [7] when only five sources were provided; a marker
-    the UI cannot resolve is worse than no marker.
-    """
-    if not text or "[" not in text:
-        return text
-
-    def _replace(match: "re.Match") -> str:
-        number = int(match.group(1))
-        return match.group(0) if 1 <= number <= valid_count else ""
-
-    out: List[str] = []
-    for segment in _CODE_SEGMENT_RE.split(text):
-        if segment.startswith("`"):
-            out.append(segment)
-            continue
-        segment = _CITATION_RE.sub(_replace, segment)
-        # Tidy up spacing left behind by removed markers
-        segment = re.sub(r" +([.,;:!?])", r"\1", segment)
-        out.append(re.sub(r"[ \t]{2,}", " ", segment))
-
-    return "".join(out)
 
 
 def _token_len(text: str) -> int:
@@ -1190,7 +1158,39 @@ class RAGGenerationMixin:
             answer = "".join(full_response)
             # Drop markers pointing at sources that do not exist — an
             # unresolvable citation is worse than none.
-            answer = _strip_invalid_citations(answer, len(sources))
+            answer = strip_invalid_citations(answer, len(sources))
+
+            # ── Phase 4: Judge ────────────────────────────────────────────────
+            # Verify the drafted answer against the passages it was built from,
+            # then keep only the sources it actually used. The answer has already
+            # streamed, so the UI shows the revision when it replaces the content
+            # on stream_end. Fails open — see judge.judge_answer.
+            verdict: Optional[str] = None
+            if not incomplete_reason and sources:
+                yield {"type": "verifying"}
+                judged = await judge_answer(
+                    question=user_message,
+                    answer=answer,
+                    sources=sources,
+                )
+                answer = judged["answer"]
+                sources = judged["sources"]
+                verdict = judged["verdict"]
+                total_prompt_tokens += judged["prompt_tokens"]
+                total_completion_tokens += judged["completion_tokens"]
+
+                if judged["judged"]:
+                    # The pruned list is what the user sees cited, so the debug
+                    # panel should agree with it.
+                    kept_keys = {
+                        (s.get("document_id"), s.get("chunk_index"))
+                        for s in sources if s.get("kind") == "rag"
+                    }
+                    all_rag_results = [
+                        r for r in all_rag_results
+                        if (r.get("document_id"), r.get("chunk_index")) in kept_keys
+                    ]
+                    yield {"type": "rag_context", "data": all_rag_results}
 
             if incomplete_reason == "max_output_tokens":
                 answer += "\n\n_[Response truncated — it reached the output length limit.]_"
@@ -1210,6 +1210,7 @@ class RAGGenerationMixin:
                 "rag_results": all_rag_results,
                 "web_results": all_web_results,
                 "sources": sources,
+                "verdict": verdict,
                 "prompt_tokens": total_prompt_tokens,
                 "completion_tokens": total_completion_tokens,
                 "total_tokens": total_prompt_tokens + total_completion_tokens,

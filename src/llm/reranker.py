@@ -25,7 +25,14 @@ try:
     logger.info("FlashRank reranker loaded (ms-marco-MiniLM-L-12-v2)")
 except ImportError:
     RERANKER_AVAILABLE = False
-    logger.info("FlashRank not installed — using BM25+vector RRF reranking")
+    # Not an optional nicety: without the cross-encoder, `rerank_score` is never
+    # set, so RAG_RERANK_MIN_SCORE never filters anything and assemble_sources
+    # falls back to raw hybrid scores. Loud, because this went unnoticed once.
+    logger.error(
+        "FlashRank is NOT installed — falling back to BM25+RRF. The cross-encoder "
+        "relevance floor is inactive and retrieval quality is degraded. "
+        "Install flashrank (it is pinned in requirements.txt)."
+    )
 except Exception as e:
     RERANKER_AVAILABLE = False
     logger.warning(
