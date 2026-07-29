@@ -140,14 +140,17 @@ async def delete_folder(
     org_context: dict = Depends(get_current_org_context),
     user_id: UUID = Depends(get_current_user_id)
 ):
-    """Delete folder."""
+    """Delete a folder and every file and subfolder beneath it."""
     org_id = org_context.get("org_id")
-    
+
     # Check permissions
     await check_general_permission(user_id, org_id, "delete")
     await check_resource_access(user_id, org_id, folder_id, "edit")
 
-    await document_service.delete_document(folder_id, UUID(org_id) if org_id else None)
+    # delete_document would soft-delete the folder row alone, orphaning its
+    # files: hidden in the UI's tree view but still active, still embedded, and
+    # still quoted by the assistant.
+    await document_service.delete_folder(folder_id, UUID(org_id) if org_id else None)
     return {"success": True}
 
 

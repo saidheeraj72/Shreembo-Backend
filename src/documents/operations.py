@@ -87,6 +87,69 @@ class DocumentOperationsMixin:
         return True
 
     @staticmethod
+    async def delete_folder(folder_id: UUID, org_id: Optional[UUID]) -> bool:
+        """Delete a folder and everything beneath it.
+
+        Deleting only the folder row leaves its files with ``status = 'active'``
+        and their embeddings in place. The UI walks the folder tree, so those
+        files disappear from it — but RAG queries storage_nodes flat by
+        (org_id, status='active', node_type='file'), so the assistant keeps
+        finding and quoting documents the user believes they deleted. The whole
+        subtree has to go down together.
+        """
+        folder = await DocumentService.get_document(folder_id, org_id)
+        if not folder:
+            return False
+
+        # Breadth-first walk collecting every descendant before deleting
+        # anything, so a failure part-way cannot leave a half-deleted tree
+        # whose remaining files are still active and searchable.
+        file_ids: List[str] = []
+        folder_ids: List[str] = [str(folder_id)]
+        queue: List[str] = [str(folder_id)]
+        seen: set = {str(folder_id)}
+
+        while queue:
+            batch, queue = queue[:100], queue[100:]
+            children = db.admin.table("storage_nodes").select(
+                "id, node_type"
+            ).in_("parent_id", batch).execute()
+            for child in (children.data or []):
+                if child["id"] in seen:
+                    continue
+                seen.add(child["id"])
+                if child["node_type"] == "file":
+                    file_ids.append(child["id"])
+                else:
+                    folder_ids.append(child["id"])
+                    queue.append(child["id"])
+
+        logger.info(
+            "Deleting folder %s: %d nested files, %d folders",
+            folder_id, len(file_ids), len(folder_ids),
+        )
+
+        # Files first — each needs its S3 object and vectors removed, which
+        # delete_document already handles.
+        for file_id in file_ids:
+            try:
+                await DocumentService.delete_document(UUID(file_id), org_id)
+            except Exception as e:
+                # Keep going: one unreachable S3 object must not leave the rest
+                # of the subtree active and searchable.
+                logger.error("Failed to delete %s under folder %s: %s", file_id, folder_id, e)
+
+        # Then the folders themselves, deepest last is irrelevant for a soft
+        # delete, so they go in one statement.
+        for i in range(0, len(folder_ids), 100):
+            db.admin.table("storage_nodes").update({
+                "status": "deleted",
+                "deleted_at": datetime.utcnow().isoformat(),
+            }).in_("id", folder_ids[i:i + 100]).execute()
+
+        return True
+
+    @staticmethod
     async def move_document(doc_id: UUID, org_id: Optional[UUID], target_folder_id: Optional[UUID]) -> Optional[dict]:
         doc = await DocumentService.update_document(
             doc_id, org_id,
