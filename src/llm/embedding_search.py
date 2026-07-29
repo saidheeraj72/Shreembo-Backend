@@ -5,6 +5,7 @@ from uuid import UUID
 from src.core.database import db
 from src.core.openai_client import openai_client
 from src.core.qdrant_client import qdrant_client
+from src.llm import sparse
 
 
 class EmbeddingSearchMixin:
@@ -17,9 +18,14 @@ class EmbeddingSearchMixin:
         folder_id: Optional[UUID] = None,
     ) -> List[dict]:
         query_embedding = await openai_client.get_embedding(query)
+        # folder_id is written into the payload at index time; documents indexed
+        # before that carry no value and simply won't match a folder filter.
         filter_dict = {"folder_id": str(folder_id)} if folder_id else None
         namespace = str(org_id) if org_id else str(user_id)
-        results = await qdrant_client.query(query_embedding, namespace, top_k, filter_dict)
+        results = await qdrant_client.query(
+            query_embedding, namespace, top_k, filter_dict,
+            sparse_vector=sparse.encode_query(query).as_dict(),
+        )
 
         doc_ids = list(set(r.metadata.get("document_id") for r in results if r.metadata))
         if not doc_ids:

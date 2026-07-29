@@ -22,10 +22,21 @@ qdrant-client
 openai
 
 # Document Processing
-unstructured[pdf]  # Best-in-class document parsing (PDF, DOCX, XLSX, PPTX, HTML, etc.); [pdf] extra enables the primary PDF extractor (tables/layout)
+#
+# Two extraction paths, no overlap:
+#   non-PDF -> markitdown. Its format support is entirely extras-gated: without
+#             these, docx/pptx/xlsx fail silently and fall through.
+#   PDF     -> pymupdf4llm (+ pymupdf-layout) -> pymupdf OCR. Native C, no model
+#             downloads at runtime, so cold starts stay predictable.
+markitdown[docx,pptx,xlsx,xls,outlook]  # Every non-PDF format
 tiktoken  # Token counting for chunk sizing (OpenAI cl100k_base)
-pymupdf  # PDF text extraction (fallback)
-pymupdf4llm  # PDF to markdown conversion (fallback)
+pymupdf  # PDF engine + OCR fallback (needs the tesseract-ocr binary)
+pymupdf4llm  # PDF to markdown — primary PDF extractor
+pymupdf-layout  # Multi-column reading order for pymupdf4llm
+
+# Reranking — a cross-encoder, not optional. Without it the RAG_RERANK_MIN_SCORE
+# relevance floor never applies and rerank_score is never set.
+flashrank
 
 # WebSocket
 websockets

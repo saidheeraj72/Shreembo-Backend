@@ -19,9 +19,26 @@ from src.llm.web_search import web_search_service
 from src.chat.service import chat_service
 from src.llm.token_usage import token_usage_service
 from src.llm import reranker
+from src.llm.citations import strip_invalid_citations
+from src.llm.judge import judge_answer
 from src.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Token accounting for the context budget
+# ---------------------------------------------------------------------------
+
+_ctx_enc = None
+
+
+def _token_len(text: str) -> int:
+    global _ctx_enc
+    if _ctx_enc is None:
+        import tiktoken
+        _ctx_enc = tiktoken.get_encoding("cl100k_base")
+    return len(_ctx_enc.encode(text, disallowed_special=()))
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +208,12 @@ precise queries to cover complex questions.
 the user — never approximate numbers in your head.
 - Do NOT call any tool for greetings, thanks, simple follow-ups, or questions you can \
 answer from the conversation history alone.
-- Choose top_k deliberately: 5–8 for narrow lookups, 10–15 for broad topics."""
+- Choose top_k deliberately: 5–8 for narrow lookups, 10–15 for broad topics.
+
+You may be shown the results of your previous tool calls. If they already answer the \
+question, call no further tools. If a search came back empty or off-target, try again \
+with different wording — a filename, a synonym, or a more specific phrase — rather than \
+repeating the same query."""
 
 
 # ---------------------------------------------------------------------------
@@ -540,18 +562,161 @@ def _safe_calculate(expression: str) -> Dict[str, Any]:
 class RAGGenerationMixin:
 
     @staticmethod
+    def assemble_sources(
+        rag_results: List[dict],
+        document_contents: Optional[List[dict]] = None,
+        web_results: Optional[List[dict]] = None,
+        default_source_type: str = "organization",
+    ) -> List[dict]:
+        """Build the citable source list, numbered from 1.
+
+        This is the single place citation numbers are assigned; ``build_context``
+        renders from the same list, so the ``[n]`` markers the model sees always
+        line up with the sources the user can click.
+        """
+        sources: List[dict] = []
+
+        for r in rag_results:
+            sources.append({
+                "kind": "rag",
+                "document_id": r.get("document_id"),
+                "document_name": r.get("document_name", "Unknown"),
+                "chunk_index": r.get("chunk_index", 0),
+                "chunk_text": r.get("chunk_text", ""),
+                "section_header": r.get("section_header", ""),
+                "page_numbers": r.get("page_numbers", []),
+                # Prefer the cross-encoder score — it is a calibrated relevance
+                # value, unlike a raw cosine or RRF score
+                "score": r.get("rerank_score", r.get("score", 0.0)),
+                "source_type": r.get("source") or default_source_type,
+            })
+
+        # Documents read in full are sources too — without this, answers built
+        # from get_document_content show an empty Sources panel.
+        cited_doc_ids = {s["document_id"] for s in sources}
+        for dc in (document_contents or []):
+            doc_id = dc.get("document_id")
+            chunks = dc.get("chunks") or []
+            if dc.get("error") or not doc_id or doc_id in cited_doc_ids or not chunks:
+                continue
+            cited_doc_ids.add(doc_id)
+            preview = " ".join(c.get("chunk_text", "") for c in chunks[:2])
+            sources.append({
+                "kind": "document",
+                "document_id": doc_id,
+                "document_name": dc.get("document_name", "Unknown"),
+                "chunk_index": 0,
+                "chunk_text": preview[:1000],
+                "section_header": "",
+                "page_numbers": [],
+                "score": 1.0,
+                "source_type": dc.get("source") or default_source_type,
+            })
+
+        for w in (web_results or []):
+            sources.append({
+                "kind": "web",
+                "title": w.get("title", ""),
+                "url": w.get("url", ""),
+                "snippet": w.get("snippet", ""),
+                "source_type": "web",
+            })
+
+        for i, source in enumerate(sources, 1):
+            source["citation"] = i
+
+        return sources
+
+    @staticmethod
     def build_context(
         rag_results: List[dict],
         web_results: Optional[List[dict]] = None,
         document_contents: Optional[List[dict]] = None,
         calculation_results: Optional[List[dict]] = None,
+        document_listings: Optional[List[dict]] = None,
+        max_tokens: Optional[int] = None,
+        sources: Optional[List[dict]] = None,
     ) -> str:
-        """Build context string from all tool results."""
-        parts: List[str] = []
+        """Build the context string from all tool results, within a token budget.
 
+        Sections are filled in priority order; whatever no longer fits is
+        dropped with an explicit note so the model knows the view is partial
+        rather than silently answering from a truncated document.
+        """
+        budget = max_tokens or settings.RAG_MAX_CONTEXT_LENGTH
+        parts: List[str] = []
+        used = 0
+
+        # Citation numbers come from the assembled source list so the markers in
+        # the answer resolve to the sources shown in the UI.
+        sources = sources if sources is not None else RAGGenerationMixin.assemble_sources(
+            rag_results, document_contents, web_results
+        )
+        rag_citations = [s["citation"] for s in sources if s.get("kind") == "rag"]
+        doc_citations = {
+            s["document_id"]: s["citation"] for s in sources if s.get("kind") == "document"
+        }
+        web_citations = [s["citation"] for s in sources if s.get("kind") == "web"]
+
+        def add(text: str) -> bool:
+            """Append *text* if it fits the remaining budget."""
+            nonlocal used
+            cost = _token_len(text)
+            if used + cost > budget:
+                return False
+            parts.append(text)
+            used += cost
+            return True
+
+        def note_truncation(what: str, omitted: int):
+            # Appended unconditionally: the model must always know its view is
+            # partial, even when the budget is exactly exhausted.
+            parts.append(f"\n_[{omitted} {what} omitted — context budget reached]_\n")
+
+        # ── Calculations (tiny, always first) ─────────────────────────────
+        if calculation_results:
+            add("\n## Calculation Results:\n")
+            for c in calculation_results:
+                if c.get("error"):
+                    add(f"- {c['expression']} → Error: {c['error']}\n")
+                else:
+                    add(f"- {c['expression']} = {c['formatted']}\n")
+
+        # ── Available documents (from list_documents / find_document_by_name) ──
+        if document_listings:
+            seen_docs: set = set()
+            listed: List[str] = []
+            for entry in document_listings:
+                for d in entry.get("documents", []):
+                    key = d.get("id")
+                    if key in seen_docs:
+                        continue
+                    seen_docs.add(key)
+                    line = f"- {d.get('name', 'Unknown')}"
+                    if d.get("type"):
+                        line += f" ({d['type']})"
+                    if d.get("source"):
+                        line += f" [{d['source']}]"
+                    if d.get("description"):
+                        line += f" — {d['description']}"
+                    listed.append(line + "\n")
+
+            if listed:
+                add("\n## Available Documents:\n")
+                omitted = 0
+                for line in listed:
+                    if not add(line):
+                        omitted += 1
+                if omitted:
+                    note_truncation("documents", omitted)
+            else:
+                add("\n## Available Documents:\nNo matching documents were found.\n")
+
+        # ── Retrieved excerpts ────────────────────────────────────────────
         if rag_results:
-            parts.append("## Relevant Document Excerpts:\n")
-            for i, r in enumerate(rag_results, 1):
+            add("## Relevant Document Excerpts:\n")
+            omitted = 0
+            for i, r in zip(rag_citations, rag_results):
                 header = f"### Source {i}: {r['document_name']}"
                 section = r.get("section_header")
                 pages = r.get("page_numbers")
@@ -560,38 +725,37 @@ class RAGGenerationMixin:
                 if pages:
                     page_str = ", ".join(str(p) for p in pages)
                     header += f" (p. {page_str})"
-                parts.append(
-                    f"\n{header}\n"
-                    f"{r['chunk_text']}\n"
-                )
+                if not add(f"\n{header}\n{r['chunk_text']}\n"):
+                    omitted += 1
+            if omitted:
+                note_truncation("excerpts", omitted)
 
+        # ── Web results ───────────────────────────────────────────────────
+        if web_results:
+            add("\n## Web Search Results:\n")
+            omitted = 0
+            for i, r in zip(web_citations, web_results):
+                if not add(f"\n### Source {i}: {r['title']}\nURL: {r['url']}\n{r['snippet']}\n"):
+                    omitted += 1
+            if omitted:
+                note_truncation("web results", omitted)
+
+        # ── Full document reads (largest; gets the remaining budget) ──────
         if document_contents:
-            parts.append("\n## Full Document Contents:\n")
+            add("\n## Full Document Contents:\n")
             for dc in document_contents:
                 if dc.get("error"):
-                    parts.append(f"\n### {dc.get('document_name', 'Unknown')}\nNote: {dc['error']}\n")
-                else:
-                    parts.append(f"\n### {dc['document_name']}\n")
-                    for chunk in dc.get("chunks", []):
-                        parts.append(chunk["chunk_text"])
-                        parts.append("\n")
-
-        if web_results:
-            parts.append("\n## Web Search Results:\n")
-            for r in web_results:
-                parts.append(
-                    f"\n### {r['title']}\n"
-                    f"URL: {r['url']}\n"
-                    f"{r['snippet']}\n"
-                )
-
-        if calculation_results:
-            parts.append("\n## Calculation Results:\n")
-            for c in calculation_results:
-                if c.get("error"):
-                    parts.append(f"- {c['expression']} → Error: {c['error']}\n")
-                else:
-                    parts.append(f"- {c['expression']} = {c['formatted']}\n")
+                    add(f"\n### {dc.get('document_name', 'Unknown')}\nNote: {dc['error']}\n")
+                    continue
+                number = doc_citations.get(dc.get("document_id"))
+                label = f"Source {number}: " if number else ""
+                add(f"\n### {label}{dc['document_name']}\n")
+                omitted = 0
+                for chunk in dc.get("chunks", []):
+                    if not add(chunk["chunk_text"] + "\n"):
+                        omitted += 1
+                if omitted:
+                    note_truncation(f"chunks of '{dc['document_name']}'", omitted)
 
         return "".join(parts)
 
@@ -621,6 +785,9 @@ class RAGGenerationMixin:
         all_web_results: List[dict] = []
         all_document_contents: List[dict] = []
         all_calculation_results: List[dict] = []
+        all_document_listings: List[dict] = []
+        # Largest top_k any search asked for — the reranker must not cut below it
+        max_requested_top_k = 0
         total_prompt_tokens = 0
         total_completion_tokens = 0
 
@@ -642,7 +809,14 @@ class RAGGenerationMixin:
                 available_tools.append(_SEARCH_WEB_TOOL)
             available_tools.append(_CALCULATE_TOOL)  # always available
 
-            if available_tools:
+            seen_keys: set = set()
+            seen_calls: set = set()
+            used_tools = False
+
+            # Tool calling runs for a bounded number of rounds, feeding results
+            # back each time so the model can react to them — retry a search
+            # that came back empty, or stop early once it has enough.
+            for tool_round in range(settings.RAG_MAX_TOOL_ROUNDS if available_tools else 0):
                 tool_response = await client.responses.create(
                     model=settings.OPENAI_CHAT_MODEL,
                     instructions=_TOOL_ROUTING_INSTRUCTIONS,
@@ -659,15 +833,34 @@ class RAGGenerationMixin:
                     if getattr(item, "type", None) == "function_call"
                 ]
 
-                seen_keys: set = set()
-
+                # Skip calls already made in an earlier round — without this the
+                # model can loop on the same query and burn the round budget.
+                fresh_calls = []
                 for call in function_calls:
-                    args = json.loads(call.arguments)
+                    key = (call.name, call.arguments)
+                    if key in seen_calls:
+                        continue
+                    seen_calls.add(key)
+                    fresh_calls.append(call)
+
+                if not fresh_calls:
+                    break
+
+                used_tools = True
+                round_outputs: List[dict] = []
+
+                for call in fresh_calls:
+                    try:
+                        args = json.loads(call.arguments)
+                    except (TypeError, ValueError):
+                        args = {}
+                    tool_summary: Dict[str, Any] = {"status": "ok"}
 
                     # ── search_documents ──────────────────────────────────────
                     if call.name == "search_documents":
                         query = args.get("query") or user_message
                         top_k = max(3, min(int(args.get("top_k", 8)), 20))
+                        max_requested_top_k = max(max_requested_top_k, top_k)
                         fetch_k = top_k * settings.RAG_RETRIEVAL_TOP_K_MULTIPLIER
 
                         yield {"type": "tool_start", "name": "search_documents",
@@ -694,6 +887,23 @@ class RAGGenerationMixin:
                                 seen_keys.add(key)
                                 all_rag_results.append(r)
 
+                        tool_summary = {
+                            "query": query,
+                            "match_count": len(results),
+                            "matches": [
+                                {
+                                    "document": r["document_name"],
+                                    "section": r.get("section_header", ""),
+                                    "preview": (r.get("chunk_text") or "")[:180],
+                                }
+                                for r in results[:5]
+                            ],
+                        }
+                        if not results:
+                            tool_summary["note"] = (
+                                "No matches. Try different wording or a filename."
+                            )
+
                         yield {"type": "tool_done", "name": "search_documents",
                                "count": len(results)}
 
@@ -717,6 +927,11 @@ class RAGGenerationMixin:
                             logger.error("list_documents failed: %s", e)
                             listing = {"documents": [], "count": 0, "limit": limit, "offset": offset}
 
+                        all_document_listings.append(listing)
+                        tool_summary = {
+                            "count": listing["count"],
+                            "documents": [d["name"] for d in listing["documents"]],
+                        }
                         yield {"type": "tool_done", "name": "list_documents",
                                "count": listing["count"], "data": listing}
 
@@ -732,6 +947,11 @@ class RAGGenerationMixin:
                             logger.error("search_web failed: %s", e)
                             web_results = []
 
+                        tool_summary = {
+                            "query": query,
+                            "count": len(web_results),
+                            "titles": [r.get("title", "") for r in web_results[:5]],
+                        }
                         yield {"type": "tool_done", "name": "search_web",
                                "count": len(web_results)}
 
@@ -755,6 +975,12 @@ class RAGGenerationMixin:
                             logger.error("find_document_by_name failed: %s", e)
                             name_results = {"documents": [], "count": 0, "query": name_query}
 
+                        all_document_listings.append(name_results)
+                        tool_summary = {
+                            "query": name_query,
+                            "count": name_results["count"],
+                            "documents": [d["name"] for d in name_results["documents"]],
+                        }
                         yield {"type": "tool_done", "name": "find_document_by_name",
                                "count": name_results["count"], "data": name_results}
 
@@ -779,6 +1005,13 @@ class RAGGenerationMixin:
                             doc_content = {"error": str(e), "chunks": [], "document_name": doc_name}
 
                         all_document_contents.append(doc_content)
+                        tool_summary = {
+                            "document_name": doc_content.get("document_name", doc_name),
+                            "chunks_retrieved": len(doc_content.get("chunks", [])),
+                        }
+                        if doc_content.get("error"):
+                            tool_summary["error"] = doc_content["error"]
+
                         yield {"type": "tool_done", "name": "get_document_content",
                                "count": len(doc_content.get("chunks", [])),
                                "document_name": doc_content.get("document_name", doc_name)}
@@ -791,17 +1024,47 @@ class RAGGenerationMixin:
 
                         calc_result = _safe_calculate(expression)
                         all_calculation_results.append(calc_result)
+                        tool_summary = calc_result
 
                         yield {"type": "tool_done", "name": "calculate",
                                "result": calc_result.get("formatted") or calc_result.get("error", "")}
 
+                    # Hand the outcome back so the next round can react to it
+                    round_outputs.append({
+                        "type": "function_call_output",
+                        "call_id": call.call_id,
+                        "output": json.dumps(tool_summary, default=str)[:4000],
+                    })
+
+                # Record this round's calls and their results in the transcript
+                input_messages.extend([
+                    {
+                        "type": "function_call",
+                        "call_id": c.call_id,
+                        "name": c.name,
+                        "arguments": c.arguments,
+                    }
+                    for c in fresh_calls
+                ])
+                input_messages.extend(round_outputs)
+
             # ── Phase 2: Reranking ────────────────────────────────────────────
             if all_rag_results:
+                # Keep at least what the model asked for; multiple searches with
+                # different angles must not collapse to a single query's budget.
+                rerank_top_k = max(settings.RAG_TOP_K, max_requested_top_k)
                 all_rag_results = reranker.rerank(
                     query=user_message,
                     chunks=all_rag_results,
-                    top_k=settings.RAG_TOP_K,
+                    top_k=rerank_top_k,
                     min_score=settings.RAG_MIN_SCORE,
+                    rerank_min_score=settings.RAG_RERANK_MIN_SCORE,
+                )
+
+                # Widen the strongest hits with their adjacent chunks — a 512
+                # token window often clips the sentence that answers the question
+                all_rag_results = await RAGService.expand_with_neighbors(
+                    all_rag_results, user_id=user_id, org_id=org_id
                 )
 
             # Always emit rag_context (even empty) so frontend clears tool indicator
@@ -811,29 +1074,60 @@ class RAGGenerationMixin:
                 yield {"type": "web_search", "data": all_web_results}
 
             # ── Phase 3: Streaming Generation ────────────────────────────────
+            default_source_type = "organization" if org_id else "personal"
+
+            # Sources are numbered first so the context labels and the citation
+            # markers in the answer refer to the same things.
+            sources = RAGGenerationMixin.assemble_sources(
+                all_rag_results,
+                all_document_contents,
+                all_web_results,
+                default_source_type,
+            )
+
             context = RAGGenerationMixin.build_context(
                 all_rag_results,
                 all_web_results,
                 all_document_contents or None,
                 all_calculation_results or None,
+                all_document_listings or None,
+                sources=sources,
             )
 
-            instructions_parts = [settings.RAG_SYSTEM_PROMPT]
+            # `instructions` is the cacheable prefix, so it stays static — the
+            # per-turn context goes at the *end* of the input instead. Putting a
+            # different context blob in the prefix on every turn would defeat
+            # prompt caching entirely.
+            gen_input = list(input_messages)
             if context:
-                instructions_parts.append(
-                    f"Here is relevant context to help answer the user's question:\n\n{context}"
-                )
+                gen_input.append({
+                    "role": "developer",
+                    "content": (
+                        "Context retrieved for the user's latest question. Cite it "
+                        f"with the given Source numbers:\n\n{context}"
+                    ),
+                })
+
+            gen_kwargs: Dict[str, Any] = {}
+            if used_tools:
+                # The transcript now contains function calls, so the tool
+                # definitions must come along; tool_choice="none" stops the model
+                # calling anything further at answer time.
+                gen_kwargs["tools"] = available_tools
+                gen_kwargs["tool_choice"] = "none"
 
             gen_stream = await client.responses.create(
                 model=settings.OPENAI_CHAT_MODEL,
-                instructions="\n\n".join(instructions_parts),
-                input=input_messages,
+                instructions=settings.RAG_SYSTEM_PROMPT,
+                input=gen_input,
                 reasoning={"effort": "low", "summary": "detailed"},
                 max_output_tokens=settings.OPENAI_CHAT_MAX_TOKENS,
                 stream=True,
+                **gen_kwargs,
             )
 
             full_response: List[str] = []
+            incomplete_reason: Optional[str] = None
             async for event in gen_stream:
                 if event.type == "response.reasoning_summary_text.delta":
                     yield {"type": "reasoning", "content": event.delta}
@@ -845,20 +1139,61 @@ class RAGGenerationMixin:
                     usage = event.response.usage
                     total_prompt_tokens += usage.input_tokens
                     total_completion_tokens += usage.output_tokens
+                elif event.type == "response.incomplete":
+                    # Most often the output token cap — the answer is cut short
+                    details = getattr(event.response, "incomplete_details", None)
+                    incomplete_reason = getattr(details, "reason", None) or "incomplete"
+                    usage = getattr(event.response, "usage", None)
+                    if usage:
+                        total_prompt_tokens += usage.input_tokens
+                        total_completion_tokens += usage.output_tokens
+                    logger.warning("Generation incomplete: %s", incomplete_reason)
+                elif event.type in ("response.failed", "error"):
+                    error = getattr(getattr(event, "response", None), "error", None)
+                    message = getattr(error, "message", None) or "generation failed"
+                    logger.error("Generation stream failed: %s", message)
+                    yield {"type": "error", "error": message}
+                    return
 
-            sources = [
-                {
-                    "document_id": r["document_id"],
-                    "document_name": r["document_name"],
-                    "chunk_index": r["chunk_index"],
-                    "chunk_text": r["chunk_text"],
-                    "section_header": r.get("section_header", ""),
-                    "page_numbers": r.get("page_numbers", []),
-                    "score": r["score"],
-                    "source_type": r.get("source", "organization"),
-                }
-                for r in all_rag_results
-            ]
+            answer = "".join(full_response)
+            # Drop markers pointing at sources that do not exist — an
+            # unresolvable citation is worse than none.
+            answer = strip_invalid_citations(answer, len(sources))
+
+            # ── Phase 4: Judge ────────────────────────────────────────────────
+            # Verify the drafted answer against the passages it was built from,
+            # then keep only the sources it actually used. The answer has already
+            # streamed, so the UI shows the revision when it replaces the content
+            # on stream_end. Fails open — see judge.judge_answer.
+            verdict: Optional[str] = None
+            if not incomplete_reason and sources:
+                yield {"type": "verifying"}
+                judged = await judge_answer(
+                    question=user_message,
+                    answer=answer,
+                    sources=sources,
+                )
+                answer = judged["answer"]
+                sources = judged["sources"]
+                verdict = judged["verdict"]
+                total_prompt_tokens += judged["prompt_tokens"]
+                total_completion_tokens += judged["completion_tokens"]
+
+                if judged["judged"]:
+                    # The pruned list is what the user sees cited, so the debug
+                    # panel should agree with it.
+                    kept_keys = {
+                        (s.get("document_id"), s.get("chunk_index"))
+                        for s in sources if s.get("kind") == "rag"
+                    }
+                    all_rag_results = [
+                        r for r in all_rag_results
+                        if (r.get("document_id"), r.get("chunk_index")) in kept_keys
+                    ]
+                    yield {"type": "rag_context", "data": all_rag_results}
+
+            if incomplete_reason == "max_output_tokens":
+                answer += "\n\n_[Response truncated — it reached the output length limit.]_"
 
             await token_usage_service.track_usage(
                 user_id=user_id,
@@ -871,10 +1206,11 @@ class RAGGenerationMixin:
 
             yield {
                 "type": "done",
-                "content": "".join(full_response),
+                "content": answer,
                 "rag_results": all_rag_results,
                 "web_results": all_web_results,
                 "sources": sources,
+                "verdict": verdict,
                 "prompt_tokens": total_prompt_tokens,
                 "completion_tokens": total_completion_tokens,
                 "total_tokens": total_prompt_tokens + total_completion_tokens,

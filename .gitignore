@@ -8,3 +8,4 @@ enterprise-intelligence-hub
 enterprise-intelligence-hub/
 
 qdrant_data/
+.model_cache/

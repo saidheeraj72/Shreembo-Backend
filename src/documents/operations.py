@@ -88,10 +88,23 @@ class DocumentOperationsMixin:
 
     @staticmethod
     async def move_document(doc_id: UUID, org_id: Optional[UUID], target_folder_id: Optional[UUID]) -> Optional[dict]:
-        return await DocumentService.update_document(
+        doc = await DocumentService.update_document(
             doc_id, org_id,
             parent_id=str(target_folder_id) if target_folder_id else None
         )
+
+        # Keep the vector payload's folder_id in step, so the retrieval
+        # pre-filter doesn't drop this document after a move.
+        if doc:
+            from src.core.qdrant_client import qdrant_client
+            namespace = str(org_id) if org_id else str(doc.get("owner_id"))
+            await qdrant_client.set_document_folder(
+                document_id=str(doc_id),
+                namespace=namespace,
+                folder_id=str(target_folder_id) if target_folder_id else None,
+            )
+
+        return doc
 
     @staticmethod
     async def get_download_url(doc_id: UUID, org_id: Optional[UUID]) -> Optional[str]:

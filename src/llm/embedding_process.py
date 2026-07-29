@@ -8,6 +8,7 @@ from src.core.database import db
 from src.core.openai_client import openai_client
 from src.core.qdrant_client import qdrant_client
 from src.core.websocket import ws_manager
+from src.llm import sparse
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,8 @@ class EmbeddingProcessMixin:
         upload_id: str,
         is_session_document: bool = False,
         session_id: Optional[str] = None,
+        document_name: Optional[str] = None,
+        folder_id: Optional[str] = None,
     ):
         try:
             if not is_session_document:
@@ -52,17 +55,28 @@ class EmbeddingProcessMixin:
                 return
 
             await ws_manager.send_upload_progress(user_id, upload_id, "generating_embeddings", 60)
-            chunks = EmbeddingService.chunk_text(text)
+            chunks = await EmbeddingService.chunk_text_async(text)
 
-            # Build embedding input: prepend section header for better retrieval
+            # Build embedding input: "filename > section" breadcrumb + the
+            # overlap-prefixed body. The document name is a strong retrieval
+            # signal on its own ("the Q3 report", "the NDA").
+            # chunk.text stays clean — that is what gets stored and cited.
             embed_texts = []
             for chunk in chunks:
-                if chunk.section_header:
-                    embed_texts.append(f"{chunk.section_header}\n\n{chunk.text}")
-                else:
-                    embed_texts.append(chunk.text)
+                breadcrumb = " > ".join(p for p in (document_name, chunk.section_header) if p)
+                body = chunk.text_to_embed
+                embed_texts.append(f"{breadcrumb}\n\n{body}" if breadcrumb else body)
 
-            embeddings = await openai_client.get_embeddings_batch(embed_texts)
+            async def _embed_progress(done: int, total: int):
+                if total > 1:
+                    await ws_manager.send_upload_progress(
+                        user_id, upload_id, "generating_embeddings",
+                        60 + int(20 * done / total),
+                    )
+
+            embeddings = await openai_client.get_embeddings_batch(
+                embed_texts, progress_cb=_embed_progress
+            )
             await ws_manager.send_upload_progress(user_id, upload_id, "storing_embeddings", 80)
 
             if is_session_document:
@@ -73,7 +87,7 @@ class EmbeddingProcessMixin:
                 namespace = str(org_id) if org_id else user_id
 
             vectors = []
-            for chunk, embedding in zip(chunks, embeddings):
+            for chunk, embedding, embed_text in zip(chunks, embeddings, embed_texts):
                 metadata = {
                     "document_id": str(document_id),
                     "user_id": user_id,
@@ -82,10 +96,19 @@ class EmbeddingProcessMixin:
                     "section_header": chunk.section_header,
                     "page_numbers": chunk.page_numbers,
                     "chunk_type": chunk.chunk_type,
+                    # Enables permission pre-filtering at search time
+                    "folder_id": str(folder_id) if folder_id else None,
                 }
                 if is_session_document and session_id:
                     metadata["session_id"] = session_id
-                vectors.append({"id": f"{document_id}_{chunk.chunk_index}", "values": embedding, "metadata": metadata})
+                vectors.append({
+                    "id": f"{document_id}_{chunk.chunk_index}",
+                    "values": embedding,
+                    "metadata": metadata,
+                    # Lexical vector for hybrid search — same text as the dense
+                    # side, so filename and section terms are matchable too.
+                    "sparse": sparse.encode_document(embed_text).as_dict(),
+                })
 
             for i in range(0, len(vectors), 50):
                 await qdrant_client.upsert(vectors[i : i + 50], namespace, index_name)

@@ -1,4 +1,6 @@
 """Auto-split RAG service part."""
+from collections import OrderedDict
+from itertools import zip_longest
 from typing import Optional, List, Dict, Any, AsyncGenerator
 from uuid import UUID
 import logging
@@ -10,12 +12,34 @@ from src.access.permission import permission_service
 from src.llm.web_search import web_search_service
 from src.chat.service import chat_service
 from src.llm.token_usage import token_usage_service
+from src.llm import sparse
 from src.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Query embeddings are cached for the process lifetime — the agent fires
+# several overlapping searches per turn and identical queries recur across
+# turns. Bounded so it cannot grow without limit.
+_QUERY_EMBEDDING_CACHE: "OrderedDict[str, List[float]]" = OrderedDict()
+_QUERY_EMBEDDING_CACHE_MAX = 512
+
 
 class RAGRetrievalMixin:
+    @staticmethod
+    async def get_query_embedding(query: str) -> Optional[List[float]]:
+        """Embed a query, reusing the result for repeated identical queries."""
+        cached = _QUERY_EMBEDDING_CACHE.get(query)
+        if cached is not None:
+            _QUERY_EMBEDDING_CACHE.move_to_end(query)
+            return cached
+
+        embedding = await openai_client.get_embedding(query)
+        if embedding:
+            _QUERY_EMBEDDING_CACHE[query] = embedding
+            if len(_QUERY_EMBEDDING_CACHE) > _QUERY_EMBEDDING_CACHE_MAX:
+                _QUERY_EMBEDDING_CACHE.popitem(last=False)
+        return embedding
+
     @staticmethod
     async def get_accessible_documents_for_rag(
         user_id: UUID,
@@ -140,12 +164,17 @@ class RAGRetrievalMixin:
         top_k = top_k or settings.RAG_TOP_K
         normalized_selected_ids = [str(d) for d in (selected_document_ids or []) if d]
 
-        # Get query embedding
-        query_embedding = await openai_client.get_embedding(query)
+        # Get query embedding (cached — the agent often issues overlapping
+        # queries within a single turn)
+        query_embedding = await RAGService.get_query_embedding(query)
 
         if not query_embedding:
             logger.error("RAG: Failed to get embedding for query: %s", query)
             return []
+
+        # Lexical side of hybrid search — catches exact tokens (invoice numbers,
+        # SKUs, error codes) that dense vectors routinely miss.
+        sparse_query = sparse.encode_query(query).as_dict()
 
         # Separate results from main index and chat-sessions index
         main_results = []
@@ -157,19 +186,40 @@ class RAGRetrievalMixin:
 
             logger.debug("RAG: Searching main index in namespace: %s, top_k: %s", namespace, top_k)
 
-            main_filter = None
+            main_filter = {}
             if normalized_selected_ids:
-                main_filter = {"document_id": {"$in": normalized_selected_ids}}
+                main_filter["document_id"] = {"$in": normalized_selected_ids}
                 logger.debug(
                     "RAG: Restricting main index to %d selected document IDs",
                     len(normalized_selected_ids),
                 )
 
+            # Push folder permissions into the vector search. Without this, an
+            # org user with narrow access gets a top-K full of chunks they
+            # cannot see, which are then filtered away to almost nothing.
+            # The database check further down stays authoritative — this only
+            # improves recall, so a stale payload can never widen access.
+            if org_id and not normalized_selected_ids:
+                is_admin = await permission_service.is_admin_or_owner(user_id, org_id)
+                if not is_admin:
+                    accessible_folder_ids = await permission_service.get_accessible_folder_ids(
+                        user_id, org_id
+                    )
+                    main_filter["folder_id"] = {
+                        "$in_or_null": [str(f) for f in accessible_folder_ids]
+                    }
+                    logger.debug(
+                        "RAG: Pre-filtering main index to %d accessible folders",
+                        len(accessible_folder_ids),
+                    )
+
+            # top_k already includes the caller's over-fetch factor
             results = await qdrant_client.query(
                 vector=query_embedding,
                 namespace=namespace,
-                top_k=top_k * 2,  # Get extra for filtering
-                filter=main_filter,
+                top_k=top_k,
+                filter=main_filter or None,
+                sparse_vector=sparse_query,
             )
             if results:
                 main_results = results
@@ -201,9 +251,10 @@ class RAGRetrievalMixin:
             session_index_results = await qdrant_client.query(
                 vector=query_embedding,
                 namespace=session_namespace,
-                top_k=top_k * 2,
+                top_k=top_k,
                 filter={'session_id': str(session_id)},  # Filter by session for isolation
-                index_name=settings.QDRANT_SESSIONS_COLLECTION
+                index_name=settings.QDRANT_SESSIONS_COLLECTION,
+                sparse_vector=sparse_query,
             )
             if session_index_results:
                 session_results = session_index_results
@@ -249,7 +300,8 @@ class RAGRetrievalMixin:
                             'section_header': r.metadata.get('section_header', ''),
                             'page_numbers': r.metadata.get('page_numbers', []),
                             'chunk_type': r.metadata.get('chunk_type', 'text'),
-                            'score': r.score
+                            'score': r.score,
+                            'score_type': r.score_type,
                         })
 
         # Process session index results - no permission check needed (session isolation is enough)
@@ -274,10 +326,10 @@ class RAGRetrievalMixin:
             for r in session_results:
                 session_doc_id = r.metadata.get('document_id')
                 if session_doc_id in session_doc_map:
-                    # Boost score for session documents to prioritize them
-                    # This ensures session-specific context is not "crowded out" by main index results
-                    boosted_score = r.score * 1.1
-
+                    # No score boost: main and session scores come from separate
+                    # searches and are not comparable, and the cross-encoder
+                    # rerank downstream reorders everything anyway — the boost
+                    # only ever skewed the score threshold.
                     session_filtered_results.append({
                         'document_id': session_doc_id,
                         'document_name': session_doc_map.get(session_doc_id, 'Unknown'),
@@ -286,13 +338,23 @@ class RAGRetrievalMixin:
                         'section_header': r.metadata.get('section_header', ''),
                         'page_numbers': r.metadata.get('page_numbers', []),
                         'chunk_type': r.metadata.get('chunk_type', 'text'),
-                        'score': boosted_score,
+                        'score': r.score,
+                        'score_type': r.score_type,
                         'source': 'session',
                     })
 
-        # Combine and sort by score
-        all_filtered_results = main_filtered_results + session_filtered_results
-        all_filtered_results.sort(key=lambda x: x['score'], reverse=True)
+        # Combine by interleaving rank, not by sorting on score. The two lists
+        # come from separate searches over separate collections, and a hybrid
+        # (RRF-fused) score lives on a ~0.016–0.033 scale while a dense-only
+        # cosine runs 0–1 — sorting them together lets the scale, not the
+        # relevance, decide what survives the top_k cut. Rank is comparable;
+        # the cross-encoder rerank downstream assigns the real ordering.
+        all_filtered_results: List[dict] = []
+        for main_hit, session_hit in zip_longest(main_filtered_results, session_filtered_results):
+            if main_hit is not None:
+                all_filtered_results.append(main_hit)
+            if session_hit is not None:
+                all_filtered_results.append(session_hit)
 
         # Take top K
         final_results = all_filtered_results[:top_k]
@@ -302,3 +364,60 @@ class RAGRetrievalMixin:
             logger.debug("RAG: Score range: %.3f to %.3f", final_results[0]['score'], final_results[-1]['score'])
 
         return final_results
+
+    @staticmethod
+    async def expand_with_neighbors(
+        results: List[dict],
+        user_id: UUID,
+        org_id: Optional[UUID],
+        max_expansions: int = None,
+    ) -> List[dict]:
+        """Attach the chunks either side of the strongest hits.
+
+        A 512-token window often clips the sentence that actually answers the
+        question. Pulling chunk_index ±1 for the top few hits restores that
+        context; neighbours are merged into the parent chunk's text rather than
+        added as separate sources, so citations stay one-per-passage.
+        """
+        if not results:
+            return results
+
+        max_expansions = (
+            settings.RAG_NEIGHBOR_EXPANSION if max_expansions is None else max_expansions
+        )
+        if max_expansions <= 0:
+            return results
+
+        for result in results[:max_expansions]:
+            # Session documents live in the uploader's namespace/collection
+            is_session = result.get("source") == "session"
+            namespace = str(user_id) if is_session else (str(org_id) if org_id else str(user_id))
+            index_name = settings.QDRANT_SESSIONS_COLLECTION if is_session else None
+
+            index = result.get("chunk_index", 0)
+            wanted = [i for i in (index - 1, index + 1) if i >= 0]
+
+            try:
+                neighbors = await qdrant_client.fetch_chunks(
+                    document_id=result["document_id"],
+                    namespace=namespace,
+                    chunk_indices=wanted,
+                    index_name=index_name,
+                )
+            except Exception as e:
+                logger.debug("RAG: neighbour fetch failed for %s: %s", result["document_id"], e)
+                continue
+
+            if not neighbors:
+                continue
+
+            before = [c["chunk_text"] for c in neighbors
+                      if c.get("chunk_index", 0) < index and c.get("chunk_text")]
+            after = [c["chunk_text"] for c in neighbors
+                     if c.get("chunk_index", 0) > index and c.get("chunk_text")]
+
+            parts = before + [result["chunk_text"]] + after
+            result["chunk_text"] = "\n\n".join(parts)
+            result["expanded"] = True
+
+        return results

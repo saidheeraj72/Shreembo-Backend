@@ -17,7 +17,7 @@ OUTPUT_FILE = "chunks_output.txt"
 
 
 def extract_pdf(pdf_path: str) -> str:
-    """Extract text using the full extraction chain: unstructured → pymupdf4llm → OCR."""
+    """Extract using the production path: pymupdf4llm for PDFs, markitdown otherwise."""
     with open(pdf_path, "rb") as f:
         file_bytes = f.read()
 
@@ -31,29 +31,19 @@ def extract_pdf(pdf_path: str) -> str:
         print(f"Pages: {len(doc)}")
         doc.close()
 
-    # 1. Try unstructured (best quality)
-    from src.llm.embedding_core import _extract_with_unstructured
-    text = _extract_with_unstructured(file_bytes, file_type)
-    if text and text.strip():
-        print(f"Extraction: unstructured ({len(text):,} chars)")
-        return text
+        from src.llm.embedding_core import _extract_pdf
+        text = _extract_pdf(file_bytes)
+        extractor = "pymupdf4llm"
+    else:
+        from src.llm.embedding_core import _extract_with_markitdown
+        text = _extract_with_markitdown(file_bytes, file_type)
+        extractor = "markitdown"
 
-    # 2. Fallback: pymupdf4llm
-    if file_type == "pdf":
-        from src.llm.embedding_core import _extract_pdf_with_pymupdf
-        text = _extract_pdf_with_pymupdf(file_bytes)
-        if text and text.strip():
-            print(f"Extraction: pymupdf4llm fallback ({len(text):,} chars)")
-            return text
+    if not text or not text.strip():
+        raise RuntimeError(f"{extractor} extracted nothing from {pdf_path}")
 
-        # 3. Last resort: OCR
-        from src.llm.embedding_core import _extract_pdf_with_ocr
-        text = _extract_pdf_with_ocr(file_bytes)
-        if text and text.strip():
-            print(f"Extraction: OCR fallback ({len(text):,} chars)")
-            return text
-
-    raise RuntimeError(f"All extraction methods failed for {pdf_path}")
+    print(f"Extraction: {extractor} ({len(text):,} chars)")
+    return text
 
 
 def main():

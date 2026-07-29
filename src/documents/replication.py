@@ -197,7 +197,9 @@ class DocumentReplicationMixin:
                                         s3_key=s3_key,
                                         file_type=ext,
                                         user_id=user_id,
-                                        upload_id=upload_id
+                                        upload_id=upload_id,
+                                        document_name=document["name"],
+                                        folder_id=document.get("parent_id"),
                                     )
                                 )
 

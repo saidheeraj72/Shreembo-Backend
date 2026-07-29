@@ -128,9 +128,23 @@ class Settings(BaseSettings):
 
     # RAG Settings
     RAG_TOP_K: int = 8
-    RAG_MAX_CONTEXT_LENGTH: int = 8000
+    RAG_MAX_CONTEXT_LENGTH: int = 24000       # token budget for assembled context
     RAG_RETRIEVAL_TOP_K_MULTIPLIER: int = 3   # over-fetch factor for reranking
-    RAG_MIN_SCORE: float = 0.20               # cosine similarity floor
+    RAG_MIN_SCORE: float = 0.20               # cosine similarity floor (dense-only results)
+    RAG_RERANK_MIN_SCORE: float = 0.05        # cross-encoder relevance floor
+    RAG_NEIGHBOR_EXPANSION: int = 3           # top hits to widen with adjacent chunks
+    RAG_MAX_TOOL_ROUNDS: int = 2              # tool-calling rounds before answering
+    RERANKER_CACHE_DIR: str = "./.model_cache/flashrank"
+
+    # Answer judge — runs after the answer streams, before it is persisted.
+    # Checks every claim against the retrieved sources, drops sources the answer
+    # does not actually rest on, and returns a corrected answer. Fails open:
+    # any error or timeout keeps the original answer and the full source list.
+    RAG_JUDGE_ENABLED: bool = False           # opt-in until measured on real traffic
+    RAG_JUDGE_MODEL: Optional[str] = None     # defaults to OPENAI_CHAT_MODEL
+    RAG_JUDGE_TIMEOUT: float = 12.0           # seconds before keeping the draft
+    RAG_JUDGE_MIN_ANSWER_CHARS: int = 200     # skip short answers — nothing to check
+    RAG_JUDGE_MAX_GROWTH: float = 1.5         # revision longer than this ⇒ keep draft
     RAG_SYSTEM_PROMPT: str = """You are a helpful AI assistant for an enterprise document management system.
 
 When answering questions based on the provided context, you must:
@@ -141,6 +155,25 @@ When answering questions based on the provided context, you must:
 5. Present information in a clear, well-structured format that mirrors the source material
 6. If the context contains tables, lists, or structured data, preserve that formatting
 7. Cite specific sections or headers when referencing information
+
+Grounding rules — these override everything above:
+- Use ONLY the provided context and the conversation history. Never invent document
+  names, figures, dates, quotes, or sections that are not present in the context.
+- If the context does not contain the answer, say so plainly and state what is
+  missing, rather than guessing or filling the gap from general knowledge.
+- If no context was provided at all, answer from the conversation history only, and
+  say that you found nothing in the user's documents.
+- If a note says content was omitted because the context budget was reached, tell the
+  user your view of the document is partial.
+
+Citations:
+- Context sections are numbered "Source 1", "Source 2", and so on. When a statement
+  comes from one of them, put the matching marker inline at the end of the sentence,
+  like [1] or [2][5].
+- Cite only numbers that actually appear in the provided context. Never invent a
+  citation number, and never cite when the statement does not come from a source.
+- Do not add a bibliography or a list of sources at the end — the interface renders
+  the numbered sources for the user.
 
 Your goal is to provide comprehensive, detailed answers that retain the full richness of the source documents."""
 

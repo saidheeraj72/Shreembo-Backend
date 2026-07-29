@@ -38,11 +38,16 @@ RUN pip install --no-cache-dir --upgrade pip && \
 FROM base AS production
 
 # Install only the runtime system libraries (no compilers/headers)
+#   - tesseract-ocr : scanned-PDF fallback. pymupdf's get_textpage_ocr() shells
+#                     out to it; without the binary, scanned PDFs extract to
+#                     nothing and the document indexes empty.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libmagic1 \
     libssl3 \
     libffi8 \
     curl \
+    tesseract-ocr \
+    tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy installed Python packages from the dependencies stage
