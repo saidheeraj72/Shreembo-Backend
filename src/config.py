@@ -135,26 +135,39 @@ class Settings(BaseSettings):
     RAG_NEIGHBOR_EXPANSION: int = 3           # top hits to widen with adjacent chunks
     RAG_MAX_TOOL_ROUNDS: int = 2              # tool-calling rounds before answering
     RERANKER_CACHE_DIR: str = "./.model_cache/flashrank"
+    # Reasoning effort for the answer itself. Grounding is a thinking problem
+    # first: the cheapest way to cut hallucination is to have the model reason
+    # over the passages properly, not to patch the answer afterwards.
+    RAG_REASONING_EFFORT: str = "medium"
 
-    # Answer judge — runs after the answer streams, before it is persisted.
-    # Checks every claim against the retrieved sources, drops sources the answer
-    # does not actually rest on, and returns a corrected answer. Fails open:
-    # any error or timeout keeps the original answer and the full source list.
-    RAG_JUDGE_ENABLED: bool = False           # opt-in until measured on real traffic
+    # Hallucination check — runs after the answer streams, before it is
+    # persisted. It ONLY reports which claims the retrieved sources fail to
+    # support; it never rewrites the answer and never touches the source list.
+    # Runs on every RAG answer regardless of length. Fails open: any error or
+    # timeout means no verdict, and the answer is untouched either way.
+    RAG_JUDGE_ENABLED: bool = True
     RAG_JUDGE_MODEL: Optional[str] = None     # defaults to OPENAI_CHAT_MODEL
-    RAG_JUDGE_TIMEOUT: float = 12.0           # seconds before keeping the draft
-    RAG_JUDGE_MIN_ANSWER_CHARS: int = 200     # skip short answers — nothing to check
-    RAG_JUDGE_MAX_GROWTH: float = 1.5         # revision longer than this ⇒ keep draft
+    RAG_JUDGE_TIMEOUT: float = 25.0           # seconds before giving up on a verdict
+    RAG_JUDGE_REASONING_EFFORT: str = "high"  # careful reading is the whole job
     RAG_SYSTEM_PROMPT: str = """You are a helpful AI assistant for an enterprise document management system.
 
-When answering questions based on the provided context, you must:
-1. Preserve ALL details exactly as they appear in the retrieved content
-2. Maintain the original structure and organization of information
-3. Include specific data points, numbers, dates, names, and technical details
-4. DO NOT summarize or skip any relevant information from the context
-5. Present information in a clear, well-structured format that mirrors the source material
-6. If the context contains tables, lists, or structured data, preserve that formatting
-7. Cite specific sections or headers when referencing information
+Answer the question that was asked — nothing more:
+- Give the user exactly what they asked for, then stop. Do not append summaries,
+  background, related findings, next steps, or "you may also want to know" material
+  they did not ask for.
+- Match the length to the question. If it has a one-line answer, give one line. Never
+  pad a short answer to look more thorough.
+- No preamble and no sign-off. Skip "Great question", "Based on the provided context",
+  "Here is what I found", and "Let me know if you need anything else".
+- Lead with the answer. If a caveat is genuinely needed to keep it correct, it goes
+  after the answer, briefly.
+- Be exact about the details you do report: quote figures, dates, names, IDs and
+  quantities exactly as the source states them. Never round, reformat or approximate.
+- Use only the formatting the answer needs. Prose for a prose answer; a list only when
+  the answer is genuinely a list; a table only when the source data is tabular or the
+  user asked for one. Do not put headings on a short answer.
+- Reproduce a document at length ONLY when the user actually asks for a summary,
+  overview, or full extract — and then keep its structure, tables and detail intact.
 
 Grounding rules — these override everything above:
 - Use ONLY the provided context and the conversation history. Never invent document
@@ -162,7 +175,10 @@ Grounding rules — these override everything above:
 - If the context does not contain the answer, say so plainly and state what is
   missing, rather than guessing or filling the gap from general knowledge.
 - If no context was provided at all, answer from the conversation history only, and
-  say that you found nothing in the user's documents.
+  say that a search of the user's documents turned up nothing for this question.
+- An empty or unhelpful context tells you the search found nothing — it tells you
+  NOTHING about permissions. Never say you lack access to a document, that a document
+  is restricted, or that you cannot open it. You have no information about access.
 - If a note says content was omitted because the context budget was reached, tell the
   user your view of the document is partial.
 
@@ -175,7 +191,8 @@ Citations:
 - Do not add a bibliography or a list of sources at the end — the interface renders
   the numbered sources for the user.
 
-Your goal is to provide comprehensive, detailed answers that retain the full richness of the source documents."""
+Your goal is a precise, fully grounded answer to the question that was asked — not a
+comprehensive report on the documents."""
 
     # Email Agent — Gmail (Google OAuth)
     GMAIL_CLIENT_ID: Optional[str] = None

@@ -110,8 +110,21 @@ class EmbeddingProcessMixin:
                     "sparse": sparse.encode_document(embed_text).as_dict(),
                 })
 
+            # upsert() reports failure by returning False rather than raising, so
+            # the result has to be checked: ignoring it marks a document "Ready"
+            # with zero — or worse, partially — indexed chunks, and searches then
+            # come back empty for a file the UI says is available. Roll the
+            # partial write back, because search filters on the storage node's
+            # status, not on embedding_status.
             for i in range(0, len(vectors), 50):
-                await qdrant_client.upsert(vectors[i : i + 50], namespace, index_name)
+                if not await qdrant_client.upsert(vectors[i : i + 50], namespace, index_name):
+                    await qdrant_client.delete_by_document(
+                        str(document_id), namespace, index_name
+                    )
+                    raise RuntimeError(
+                        f"Vector store rejected chunks {i}–{i + len(vectors[i : i + 50])} "
+                        f"of {len(vectors)} for document {document_id}"
+                    )
 
             if not is_session_document:
                 db.admin.table("storage_nodes").update(

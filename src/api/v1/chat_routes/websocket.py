@@ -62,14 +62,25 @@ async def chat_websocket(websocket: WebSocket):
 
     user_id = UUID(payload["sub"])
 
-    # Get org context
-    profile = db.admin.table("profiles").select("org_id").eq(
-        "id", str(user_id)
-    ).maybe_single().execute()
+    # Get org context. This must fail loudly: treating a failed lookup as
+    # "personal account" silently points RAG at the user's personal namespace
+    # instead of the org's, so every org document stays invisible for the whole
+    # lifetime of the socket — until the client happens to reconnect.
+    try:
+        profile = db.admin.table("profiles").select("org_id").eq(
+            "id", str(user_id)
+        ).single().execute()
+    except Exception as e:
+        logger.error("Could not load profile for %s: %s", user_id, e)
+        await websocket.close(code=4004, reason="Could not load user profile")
+        return
 
-    org_id = None
-    if profile and profile.data and profile.data.get("org_id"):
-        org_id = UUID(profile.data["org_id"])
+    if not profile or not profile.data:
+        logger.error("No profile row for user %s", user_id)
+        await websocket.close(code=4004, reason="Could not load user profile")
+        return
+
+    org_id = UUID(profile.data["org_id"]) if profile.data.get("org_id") else None
 
     # Connect
     await chat_ws_manager.connect(websocket, str(user_id))

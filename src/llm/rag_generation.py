@@ -226,10 +226,15 @@ async def _list_accessible_documents(
     session_id: Optional[UUID],
     limit: int,
     offset: int,
+    include_main: bool = True,
 ) -> Dict[str, Any]:
     """
     Return a paginated list of documents the user can access.
     Includes org/personal documents (storage_nodes) and session documents.
+
+    ``include_main`` mirrors ``search_documents``' rag_enabled gate: with RAG
+    off, only session documents are visible. Listing org files the search tool
+    cannot read is what makes the model claim it lacks access to them.
     """
     limit = max(1, min(limit, 50))
     offset = max(0, offset)
@@ -237,7 +242,9 @@ async def _list_accessible_documents(
 
     # ── Org / personal documents ──────────────────────────────────────────
     try:
-        if org_id:
+        if not include_main:
+            query = None
+        elif org_id:
             is_admin = await permission_service.is_admin_or_owner(user_id, org_id)
             query = (
                 db.admin.table("storage_nodes")
@@ -313,8 +320,13 @@ async def _find_document_by_name(
     session_id: Optional[UUID],
     query: str,
     limit: int = 10,
+    include_main: bool = True,
 ) -> Dict[str, Any]:
-    """Search storage_nodes by filename, description, or tags (metadata only)."""
+    """Search storage_nodes by filename, description, or tags (metadata only).
+
+    ``include_main`` gates org/personal documents — see
+    ``_list_accessible_documents``.
+    """
     limit = max(1, min(limit, 20))
     docs: List[dict] = []
     seen_ids: set = set()
@@ -331,8 +343,10 @@ async def _find_document_by_name(
             return q.eq("org_id", str(org_id))
         return q.eq("owner_id", str(user_id)).is_("org_id", "null")
 
+    metadata_columns = ("name", "description") if include_main else ()
+
     try:
-        for col in ("name", "description"):
+        for col in metadata_columns:
             if len(docs) >= limit:
                 break
             result = _base_query(col).limit(limit).execute()
@@ -387,28 +401,35 @@ async def _get_document_content(
     session_id: Optional[UUID],
     document_name: str,
     max_chunks: int = 40,
+    include_main: bool = True,
 ) -> Dict[str, Any]:
-    """Retrieve all text chunks for a named document from Qdrant."""
+    """Retrieve all text chunks for a named document from Qdrant.
+
+    ``include_main`` gates org/personal documents — see
+    ``_list_accessible_documents``.
+    """
     from src.core.qdrant_client import qdrant_client
 
     max_chunks = max(1, min(max_chunks, 100))
 
     # Locate document in storage_nodes by partial name match
     try:
-        q = (
-            db.admin.table("storage_nodes")
-            .select("id, name, file_extension")
-            .ilike("name", f"%{document_name}%")
-            .eq("status", "active")
-            .eq("node_type", "file")
-        )
-        if org_id:
-            q = q.eq("org_id", str(org_id))
-        else:
-            q = q.eq("owner_id", str(user_id)).is_("org_id", "null")
+        matches = []
+        if include_main:
+            q = (
+                db.admin.table("storage_nodes")
+                .select("id, name, file_extension")
+                .ilike("name", f"%{document_name}%")
+                .eq("status", "active")
+                .eq("node_type", "file")
+            )
+            if org_id:
+                q = q.eq("org_id", str(org_id))
+            else:
+                q = q.eq("owner_id", str(user_id)).is_("org_id", "null")
 
-        result = q.limit(5).execute()
-        matches = result.data or []
+            result = q.limit(5).execute()
+            matches = result.data or []
     except Exception as e:
         logger.error("get_document_content: DB lookup failed: %s", e)
         return {"error": f"Document lookup failed: {e}", "chunks": [], "document_name": document_name}
@@ -533,6 +554,39 @@ def _eval_node(node: ast.AST) -> float:
             return _CALC_NAMES[node.id]
         raise ValueError(f"Name '{node.id}' not allowed")
     raise ValueError(f"Unsupported node: {type(node).__name__}")
+
+
+def _sources_for_check(
+    sources: List[dict],
+    document_contents: Optional[List[dict]],
+) -> List[dict]:
+    """Give the hallucination check the full text sitting behind each source.
+
+    ``assemble_sources`` keeps only a short preview for documents that were read
+    in full — plenty for the UI, but checking an answer against a preview of the
+    very document it was written from reports the rest of the answer as
+    unsupported. The full text goes onto a throwaway copy, so it never reaches
+    the websocket payload or the persisted message row.
+    """
+    if not document_contents:
+        return sources
+
+    full_by_doc = {
+        dc["document_id"]: "\n\n".join(
+            c.get("chunk_text", "") for c in (dc.get("chunks") or [])
+        )
+        for dc in document_contents
+        if dc.get("document_id") and not dc.get("error")
+    }
+    if not full_by_doc:
+        return sources
+
+    return [
+        {**s, "full_text": full_by_doc[s["document_id"]]}
+        if s.get("kind") == "document" and s.get("document_id") in full_by_doc
+        else s
+        for s in sources
+    ]
 
 
 def _safe_calculate(expression: str) -> Dict[str, Any]:
@@ -811,6 +865,7 @@ class RAGGenerationMixin:
 
             seen_keys: set = set()
             seen_calls: set = set()
+            searched_queries: set = set()
             used_tools = False
 
             # Tool calling runs for a bounded number of rounds, feeding results
@@ -862,6 +917,7 @@ class RAGGenerationMixin:
                         top_k = max(3, min(int(args.get("top_k", 8)), 20))
                         max_requested_top_k = max(max_requested_top_k, top_k)
                         fetch_k = top_k * settings.RAG_RETRIEVAL_TOP_K_MULTIPLIER
+                        searched_queries.add(query)
 
                         yield {"type": "tool_start", "name": "search_documents",
                                "query": query, "top_k": top_k}
@@ -922,6 +978,7 @@ class RAGGenerationMixin:
                                 session_id=session_id,
                                 limit=limit,
                                 offset=offset,
+                                include_main=rag_enabled,
                             )
                         except Exception as e:
                             logger.error("list_documents failed: %s", e)
@@ -970,6 +1027,7 @@ class RAGGenerationMixin:
                                 session_id=session_id,
                                 query=name_query,
                                 limit=limit,
+                                include_main=rag_enabled,
                             )
                         except Exception as e:
                             logger.error("find_document_by_name failed: %s", e)
@@ -999,6 +1057,7 @@ class RAGGenerationMixin:
                                 session_id=session_id,
                                 document_name=doc_name,
                                 max_chunks=max_chunks,
+                                include_main=rag_enabled,
                             )
                         except Exception as e:
                             logger.error("get_document_content failed: %s", e)
@@ -1047,6 +1106,53 @@ class RAGGenerationMixin:
                     for c in fresh_calls
                 ])
                 input_messages.extend(round_outputs)
+
+            # ── Phase 1b: Retrieval fallback ──────────────────────────────────
+            # The router is free to skip retrieval, and on follow-up questions it
+            # regularly does: chat history carries no record of earlier tool
+            # calls, so "answerable from the conversation" looks true even when
+            # the answer is in a document. The turn then generates from an empty
+            # context and tells the user nothing was found in their documents —
+            # while the very same question works on a retry. If the turn ended
+            # with no document content at all, search once on the raw question.
+            # When it really was chit-chat the rerank floor drops the results, so
+            # the cost is a single query.
+            if (
+                _SEARCH_DOCUMENTS_TOOL in available_tools
+                and not all_rag_results
+                and not all_document_contents
+                and user_message not in searched_queries
+            ):
+                logger.info("No document retrieval this turn — running fallback search")
+                top_k = settings.RAG_TOP_K
+                max_requested_top_k = max(max_requested_top_k, top_k)
+
+                yield {"type": "tool_start", "name": "search_documents",
+                       "query": user_message, "top_k": top_k}
+
+                try:
+                    results = await RAGService.search_documents(
+                        query=user_message,
+                        user_id=user_id,
+                        org_id=org_id,
+                        session_id=session_id,
+                        top_k=top_k * settings.RAG_RETRIEVAL_TOP_K_MULTIPLIER,
+                        search_main=rag_enabled,
+                        search_session=True,
+                        selected_document_ids=selected_document_ids,
+                    )
+                except Exception as e:
+                    logger.error("fallback search_documents failed: %s", e)
+                    results = []
+
+                for r in results:
+                    key = (r["document_id"], r["chunk_index"])
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        all_rag_results.append(r)
+
+                yield {"type": "tool_done", "name": "search_documents",
+                       "count": len(results)}
 
             # ── Phase 2: Reranking ────────────────────────────────────────────
             if all_rag_results:
@@ -1120,7 +1226,7 @@ class RAGGenerationMixin:
                 model=settings.OPENAI_CHAT_MODEL,
                 instructions=settings.RAG_SYSTEM_PROMPT,
                 input=gen_input,
-                reasoning={"effort": "low", "summary": "detailed"},
+                reasoning={"effort": settings.RAG_REASONING_EFFORT, "summary": "detailed"},
                 max_output_tokens=settings.OPENAI_CHAT_MAX_TOKENS,
                 stream=True,
                 **gen_kwargs,
@@ -1160,37 +1266,25 @@ class RAGGenerationMixin:
             # unresolvable citation is worse than none.
             answer = strip_invalid_citations(answer, len(sources))
 
-            # ── Phase 4: Judge ────────────────────────────────────────────────
-            # Verify the drafted answer against the passages it was built from,
-            # then keep only the sources it actually used. The answer has already
-            # streamed, so the UI shows the revision when it replaces the content
-            # on stream_end. Fails open — see judge.judge_answer.
+            # ── Phase 4: Hallucination check ──────────────────────────────────
+            # Detection only. The verdict travels alongside the answer; it is
+            # never applied to it, and the source list is left alone. Because
+            # nothing downstream depends on the outcome, this runs on every
+            # answer that had sources — no length floor, truncated answers
+            # included. Fails open — see judge.judge_answer.
             verdict: Optional[str] = None
-            if not incomplete_reason and sources:
+            issues: List[dict] = []
+            if sources:
                 yield {"type": "verifying"}
                 judged = await judge_answer(
                     question=user_message,
                     answer=answer,
-                    sources=sources,
+                    sources=_sources_for_check(sources, all_document_contents),
                 )
-                answer = judged["answer"]
-                sources = judged["sources"]
                 verdict = judged["verdict"]
+                issues = judged["issues"]
                 total_prompt_tokens += judged["prompt_tokens"]
                 total_completion_tokens += judged["completion_tokens"]
-
-                if judged["judged"]:
-                    # The pruned list is what the user sees cited, so the debug
-                    # panel should agree with it.
-                    kept_keys = {
-                        (s.get("document_id"), s.get("chunk_index"))
-                        for s in sources if s.get("kind") == "rag"
-                    }
-                    all_rag_results = [
-                        r for r in all_rag_results
-                        if (r.get("document_id"), r.get("chunk_index")) in kept_keys
-                    ]
-                    yield {"type": "rag_context", "data": all_rag_results}
 
             if incomplete_reason == "max_output_tokens":
                 answer += "\n\n_[Response truncated — it reached the output length limit.]_"
@@ -1211,6 +1305,7 @@ class RAGGenerationMixin:
                 "web_results": all_web_results,
                 "sources": sources,
                 "verdict": verdict,
+                "issues": issues,
                 "prompt_tokens": total_prompt_tokens,
                 "completion_tokens": total_completion_tokens,
                 "total_tokens": total_prompt_tokens + total_completion_tokens,

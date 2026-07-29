@@ -239,6 +239,8 @@ class ChatConnectionManager:
             rag_results = []
             web_results = []
             sources = []
+            verdict = None
+            issues = []
             prompt_tokens = 0
             completion_tokens = 0
 
@@ -336,6 +338,8 @@ class ChatConnectionManager:
 
                 elif chunk["type"] == "done":
                     sources = chunk.get("sources", [])
+                    verdict = chunk.get("verdict")
+                    issues = chunk.get("issues") or []
                     prompt_tokens = chunk.get("prompt_tokens", 0)
                     completion_tokens = chunk.get("completion_tokens", 0)
                     # The final text is post-processed (invalid citation markers
@@ -373,6 +377,11 @@ class ChatConnectionManager:
                 "message_id": str(response_message_id),
                 "content": full_response,
                 "sources": sources,
+                # Advisory only: the answer above is unmodified. The verdict says
+                # whether its claims held up against the sources, and issues names
+                # the ones that did not.
+                "verdict": verdict,
+                "issues": issues,
                 "token_usage": {
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,

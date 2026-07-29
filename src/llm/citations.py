@@ -1,10 +1,10 @@
 """Inline ``[n]`` citation markers.
 
-Both the generator and the answer judge rewrite these — the judge renumbers
-them after pruning unused sources — so the parsing rules live in one place.
+The parsing rules live here so that "what counts as a citation" — and what
+counts as code that merely looks like one — is defined in exactly one place.
 """
 import re
-from typing import Dict, List
+from typing import List
 
 # A citation marker, but not a markdown link label like [1](https://…)
 _CITATION_RE = re.compile(r"\[(\d{1,3})\](?!\()")
@@ -39,21 +39,5 @@ def strip_invalid_citations(text: str, valid_count: int) -> str:
     def _replace(match: "re.Match") -> str:
         number = int(match.group(1))
         return match.group(0) if 1 <= number <= valid_count else ""
-
-    return _rewrite_outside_code(text, _replace)
-
-
-def remap_citations(text: str, mapping: Dict[int, int]) -> str:
-    """Renumber ``[n]`` markers through *mapping* (old number → new number).
-
-    Markers with no entry point at a source that was dropped, so they are
-    removed rather than left dangling.
-    """
-    if not text or "[" not in text:
-        return text
-
-    def _replace(match: "re.Match") -> str:
-        new = mapping.get(int(match.group(1)))
-        return f"[{new}]" if new else ""
 
     return _rewrite_outside_code(text, _replace)
