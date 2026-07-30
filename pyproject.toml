@@ -36,3 +36,9 @@ dependencies = [
     "fpdf2",
     "python-docx",
 ]
+
+[tool.pyrefly]
+# Modules are imported as `src.foo.bar`, so the import root is the project
+# directory. Without this, the layout heuristic picks `src/` as the root and
+# every `from src...` import in the codebase reports as a missing module.
+search-path = ["."]
