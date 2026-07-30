@@ -14,6 +14,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from src.config import settings
 from src.core.cache import cache
 from src.core.exceptions import AppException
+from src.documents.recovery import fail_orphaned_documents
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,10 @@ async def lifespan(app: FastAPI):
     logger.info("Starting %s...", settings.PROJECT_NAME)
     await cache.connect()
     logger.info("Cache connected")
+
+    # Documents whose embedding task died with the previous process are stuck in
+    # a non-terminal state; nothing else would ever move them.
+    await fail_orphaned_documents()
 
     yield
 

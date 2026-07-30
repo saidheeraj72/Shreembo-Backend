@@ -1,5 +1,4 @@
 """Auto-split document service part."""
-import asyncio
 from typing import Optional, List
 from uuid import UUID, uuid4
 from urllib.parse import quote
@@ -9,6 +8,7 @@ from io import BytesIO
 from src.core.database import db
 from src.core.s3 import s3_client
 from src.core.exceptions import NotFoundError, ValidationError, ConflictError
+from src.core.tasks import spawn
 from src.core.websocket import ws_manager
 from src.llm.embedding import embedding_service
 
@@ -57,7 +57,7 @@ class DocumentUploadsMixin:
                 str(owner_id), upload_id, "processing", 30, document["id"]
             )
 
-            asyncio.create_task(
+            spawn(
                 embedding_service.process_document(
                     document_id=UUID(document["id"]),
                     org_id=org_id,
@@ -67,7 +67,8 @@ class DocumentUploadsMixin:
                     upload_id=upload_id,
                     document_name=filename,
                     folder_id=str(parent_id) if parent_id else None,
-                )
+                ),
+                name=f"embed:{document['id']}",
             )
 
         return document

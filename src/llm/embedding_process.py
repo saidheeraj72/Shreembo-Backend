@@ -1,4 +1,5 @@
 """Embedding document processing pipeline."""
+import asyncio
 import logging
 from typing import Optional
 from uuid import UUID
@@ -9,6 +10,11 @@ from src.core.openai_client import openai_client
 from src.core.qdrant_client import qdrant_client
 from src.core.websocket import ws_manager
 from src.llm import sparse
+# Extraction and chunking live on a sibling mixin. Naming it directly keeps the
+# dependency visible and resolvable; the alternative — going through the
+# composed EmbeddingService — only works because embedding.py assigns that name
+# into this module's globals after the fact, which no reader or checker can see.
+from src.llm.embedding_core import EmbeddingCoreMixin
 
 logger = logging.getLogger(__name__)
 
@@ -29,9 +35,13 @@ class EmbeddingProcessMixin:
     ):
         try:
             if not is_session_document:
-                db.admin.table("storage_nodes").update({"processing_status": "processing"}).eq(
-                    "id", str(document_id)
-                ).execute()
+                # Both columns move together. The UI polls on embedding_status,
+                # so leaving it "pending" while work is underway makes an
+                # in-flight document indistinguishable from one that never
+                # started.
+                db.admin.table("storage_nodes").update(
+                    {"processing_status": "processing", "embedding_status": "processing"}
+                ).eq("id", str(document_id)).execute()
 
             await ws_manager.send_upload_progress(user_id, upload_id, "extracting", 40)
 
@@ -43,7 +53,7 @@ class EmbeddingProcessMixin:
                 await ws_manager.send_upload_progress(user_id, upload_id, "complete", 100, str(document_id))
                 return
 
-            text = await EmbeddingService.extract_text(s3_key, file_type)
+            text = await EmbeddingCoreMixin.extract_text(s3_key, file_type)
             if not text:
                 if not is_session_document:
                     db.admin.table("storage_nodes").update(
@@ -55,7 +65,7 @@ class EmbeddingProcessMixin:
                 return
 
             await ws_manager.send_upload_progress(user_id, upload_id, "generating_embeddings", 60)
-            chunks = await EmbeddingService.chunk_text_async(text)
+            chunks = await EmbeddingCoreMixin.chunk_text_async(text)
 
             # Build embedding input: "filename > section" breadcrumb + the
             # overlap-prefixed body. The document name is a strong retrieval
@@ -97,7 +107,7 @@ class EmbeddingProcessMixin:
                     "page_numbers": chunk.page_numbers,
                     "chunk_type": chunk.chunk_type,
                     # Enables permission pre-filtering at search time
-                    "folder_id": str(folder_id) if folder_id else None,
+                    "folder_id": folder_id or None,
                 }
                 if is_session_document and session_id:
                     metadata["session_id"] = session_id
@@ -132,6 +142,21 @@ class EmbeddingProcessMixin:
                 ).eq("id", str(document_id)).execute()
 
             await ws_manager.send_upload_progress(user_id, upload_id, "complete", 100, str(document_id))
+        except asyncio.CancelledError:
+            # CancelledError is a BaseException, so `except Exception` below never
+            # sees it. The event loop cancels every pending task on shutdown or
+            # a --reload restart, which is exactly when a long embedding run is
+            # most likely to be in flight — and without this branch the row stays
+            # at "processing" forever, so the UI polls it until the tab closes.
+            logger.warning("Embedding cancelled for document %s", document_id)
+            if not is_session_document:
+                db.admin.table("storage_nodes").update(
+                    {"processing_status": "failed", "embedding_status": "failed"}
+                ).eq("id", str(document_id)).execute()
+            await ws_manager.send_upload_progress(
+                user_id, upload_id, "failed", 0, error="Processing was interrupted"
+            )
+            raise
         except Exception as e:
             logger.error("Embedding error: %s", e)
             if not is_session_document:

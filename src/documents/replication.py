@@ -1,5 +1,4 @@
 """Auto-split document service part."""
-import asyncio
 import mimetypes
 from typing import Optional, List, Dict, Any
 from uuid import UUID, uuid4
@@ -10,6 +9,7 @@ from io import BytesIO
 from src.core.database import db
 from src.core.s3 import s3_client
 from src.core.exceptions import NotFoundError, ValidationError, ConflictError
+from src.core.tasks import spawn
 from src.core.websocket import ws_manager
 from src.llm.embedding import embedding_service
 
@@ -190,7 +190,7 @@ class DocumentReplicationMixin:
                                     )
 
                                 # Start background embedding generation
-                                asyncio.create_task(
+                                spawn(
                                     embedding_service.process_document(
                                         document_id=UUID(document["id"]),
                                         org_id=org_id,
@@ -200,7 +200,8 @@ class DocumentReplicationMixin:
                                         upload_id=upload_id,
                                         document_name=document["name"],
                                         folder_id=document.get("parent_id"),
-                                    )
+                                    ),
+                                    name=f"embed:{document['id']}",
                                 )
 
                         except Exception as e:
